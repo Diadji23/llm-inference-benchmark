@@ -1,4 +1,4 @@
-"""Interface commune des backends d'inférence."""
+"""Common interface for inference backends."""
 
 from __future__ import annotations
 
@@ -15,11 +15,11 @@ class GenerationResult:
 
 
 class Backend(ABC):
-    """Un backend charge un modèle et génère en greedy (décodage déterministe).
+    """A backend loads a model and generates greedily (deterministic decoding).
 
-    Contrat de mesure : `generate` ne doit réutiliser aucun état d'un appel précédent
-    (pas de cache de préfixe), sinon les répétitions d'un même prompt sauteraient le
-    prefill et le TTFT serait faussé.
+    Measurement contract: `generate` must not reuse any state from a previous call (no
+    prefix cache), otherwise repetitions of the same prompt would skip the prefill and
+    TTFT would be wrong.
     """
 
     name: str
@@ -42,14 +42,14 @@ class Backend(ABC):
         pass
 
     def truncate_to_tokens(self, text: str, n_tokens: int) -> list[int]:
-        """Les n premiers tokens de `text`, avec le tokenizer du modèle.
+        """The first n tokens of `text`, using the model's own tokenizer.
 
-        Fixer la longueur en tokens (et non en caractères) garantit que tous les modèles
-        font le même travail de prefill, quel que soit leur tokenizer.
+        Fixing the length in tokens (not characters) guarantees that every model does the
+        same prefill work, whatever its tokenizer.
         """
         tokens = self.tokenize(text)
         if len(tokens) < n_tokens:
             raise ValueError(
-                f"texte source trop court : {len(tokens)} tokens < {n_tokens} demandés"
+                f"source text too short: {len(tokens)} tokens < {n_tokens} requested"
             )
         return tokens[:n_tokens]

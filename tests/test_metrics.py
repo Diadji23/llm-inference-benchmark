@@ -13,7 +13,7 @@ def test_timing_derived_metrics():
     assert t.ttft_s == pytest.approx(0.5)
     assert t.latency_s == pytest.approx(2.5)
     assert t.prefill_tps == pytest.approx(200.0)
-    # 40 tokens après le premier, en 2 s.
+    # 40 tokens after the first one, in 2 s.
     assert t.decode_tps == pytest.approx(20.0)
 
 
@@ -49,7 +49,7 @@ def test_peak_rss_sees_allocation():
     with PeakRSSSampler(interval_s=0.005) as base:
         time.sleep(0.02)
     with PeakRSSSampler(interval_s=0.005) as mem:
-        buf = bytearray(200 * 2**20)  # 200 Mio, touchés par l'initialisation à zéro
+        buf = bytearray(200 * 2**20)  # 200 MiB, touched by zero-initialization
         time.sleep(0.05)
         del buf
     assert mem.peak_mib - base.peak_mib > 150

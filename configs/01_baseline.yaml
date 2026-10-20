@@ -1,17 +1,15 @@
-# Étape 1 — socle : TTFT, latence, débit et mémoire de trois petits modèles.
+# Step 1 — baseline: TTFT, latency, throughput and memory of three small models.
 #
-# Hypothèse : sur CPU, le décodage est borné par la bande passante mémoire, donc le débit
-# decode doit être à peu près inversement proportionnel à la taille des poids, alors que le
-# prefill (borné par le calcul) doit croître moins vite que linéairement avec la longueur
-# du prompt grâce au traitement par lots.
+# Hypothesis: on CPU, decoding is bound by memory bandwidth, so decode throughput should be
+# roughly inversely proportional to weight size, while prefill (compute-bound) should grow
+# less than linearly with prompt length thanks to batched processing.
 #
-# Tous les modèles en Q4_K_M pour isoler l'effet de la taille ; la quantification est
-# l'objet de l'étape 2.
+# All models in Q4_K_M to isolate the effect of size; quantization is the subject of step 2.
 experiment: 01_baseline
 backend: llamacpp
 backend_args:
   n_ctx: 2048
-  n_threads: 4      # = cœurs physiques ; l'hyperthreading n'aide pas un calcul borné mémoire
+  n_threads: 4      # = physical cores; hyperthreading does not help a memory-bound workload
   n_batch: 512
   seed: 0
 
@@ -31,11 +29,11 @@ models:
 
 prompts:
   source: data/prompts/source_en.txt
-  lengths: [32, 128, 512]   # en tokens, tronqués avec le tokenizer de chaque modèle
+  lengths: [32, 128, 512]   # in tokens, truncated with each model's own tokenizer
 
 generation:
   max_new_tokens: 128
-  ignore_eos: true          # longueur de sortie fixe : sinon le débit dépend du contenu
+  ignore_eos: true          # fixed output length: otherwise throughput depends on content
 
 warmup: 2
 repetitions: 5

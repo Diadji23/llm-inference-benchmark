@@ -1,6 +1,6 @@
-"""Lance une expérience décrite par une config YAML.
+"""Run an experiment described by a YAML config.
 
-Usage : python scripts/run_experiment.py configs/01_baseline.yaml
+Usage: python scripts/run_experiment.py configs/01_baseline.yaml
 """
 
 import argparse

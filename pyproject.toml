@@ -1,7 +1,7 @@
 [project]
 name = "llmbench"
 version = "0.1.0"
-description = "Benchmark reproductible d'inférence LLM : latence, débit, mémoire, quantification, cache KV, décodage spéculatif."
+description = "Reproducible LLM inference benchmark: latency, throughput, memory, quantization, KV cache, speculative decoding."
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6",
@@ -12,13 +12,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Backend llama.cpp (GGUF) : étapes 1 et 2, rapide sur CPU.
+# llama.cpp backend (GGUF): steps 1 and 2, fast on CPU.
 llamacpp = ["llama-cpp-python>=0.3", "huggingface_hub>=0.24"]
-# Backend Hugging Face : étapes 3 (cache KV) et 4 (décodage spéculatif).
+# Hugging Face backend: steps 3 (KV cache) and 4 (speculative decoding).
 hf = ["torch>=2.4", "transformers>=4.45", "accelerate>=0.34", "optimum-quanto>=0.2"]
 dev = ["pytest>=8", "ruff>=0.6"]
 
-# Sans ça, uv installerait torch avec CUDA (~2,5 Go inutiles : pas de GPU NVIDIA ici).
+# Without this, uv would install torch with CUDA (~2.5 GB wasted: no NVIDIA GPU here).
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu" }]
 

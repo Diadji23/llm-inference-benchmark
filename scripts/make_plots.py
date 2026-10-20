@@ -1,6 +1,6 @@
-"""Génère les figures d'une expérience à partir de son summary.csv.
+"""Generate an experiment's figures from its summary.csv.
 
-Usage : python scripts/make_plots.py results/01_baseline/<run_id> [--out figures]
+Usage: python scripts/make_plots.py results/01_baseline/<run_id> [--out figures]
 """
 
 import argparse
@@ -11,8 +11,8 @@ import pandas as pd
 
 from llmbench.runner import load_config
 
-# Palette catégorielle de référence, ordre fixe : la couleur suit le modèle, pas son rang.
-# Les 3 premiers emplacements restent distinguables pour toutes les paires (y compris CVD).
+# Reference categorical palette in fixed order: color follows the model, not its rank.
+# The first 3 slots stay distinguishable for every pair (color vision deficiency included).
 SERIES = ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948")
 SURFACE, INK, INK_2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
 
@@ -35,7 +35,7 @@ def plot_baseline(summary: pd.DataFrame, models: list[str], out: Path) -> None:
     colors = {m: SERIES[i] for i, m in enumerate(models)}
     fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), layout="constrained")
 
-    # 1. TTFT selon la longueur du prompt : coût du prefill.
+    # 1. TTFT vs prompt length: cost of the prefill.
     ax = axes[0]
     for m in models:
         g = summary[summary["model"] == m].sort_values("prompt_len")
@@ -52,8 +52,8 @@ def plot_baseline(summary: pd.DataFrame, models: list[str], out: Path) -> None:
     ax.set_title("Time to first token")
     ax.margins(x=0.25)
 
-    # 2. Débit decode à longueur de prompt médiane : borné par la mémoire.
-    # 3. Mémoire de pointe nette (max sur les longueurs : le prompt le plus long fixe le pic).
+    # 2. Decode throughput at the median prompt length: memory-bound.
+    # 3. Net peak memory (max over lengths: the longest prompt sets the peak).
     mid_len = sorted(summary["prompt_len"].unique())[len(summary["prompt_len"].unique()) // 2]
     mid = summary[summary["prompt_len"] == mid_len].set_index("model").reindex(models)
     per_model = pd.DataFrame({
@@ -80,7 +80,7 @@ def plot_baseline(summary: pd.DataFrame, models: list[str], out: Path) -> None:
                frameon=False)
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=150)
-    print(f"→ {out}")
+    print(f"-> {out}")
 
 
 def main() -> None:
@@ -89,7 +89,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("figures"))
     args = parser.parse_args()
     summary = pd.read_csv(args.run_dir / "summary.csv")
-    # Ordre de la config (par taille), pas l'ordre alphabétique du groupby du résumé.
+    # Config order (by size), not the alphabetical order of the summary's groupby.
     models = [m["name"] for m in load_config(args.run_dir / "config.yaml")["models"]]
     experiment = args.run_dir.parent.name
     plot_baseline(summary, models, args.out / f"{experiment}.png")

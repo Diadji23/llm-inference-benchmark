@@ -1,4 +1,4 @@
-"""Backend llama.cpp (modèles GGUF) via llama-cpp-python."""
+"""llama.cpp backend (GGUF models) via llama-cpp-python."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class LlamaCppBackend(Backend):
 
         if not self.model_path.exists():
             raise FileNotFoundError(
-                f"{self.model_path} introuvable : lancer scripts/download_models.py"
+                f"{self.model_path} not found: run scripts/download_models.py"
             )
         self._llm = Llama(
             model_path=str(self.model_path),
@@ -54,16 +54,16 @@ class LlamaCppBackend(Backend):
     ) -> GenerationResult:
         llm = self._llm
         if len(prompt_tokens) + max_new_tokens > self.n_ctx:
-            raise ValueError("prompt + génération dépasse n_ctx")
-        # reset() remet n_tokens à 0 : generate() ne trouve alors aucun préfixe commun et
-        # refait tout le prefill (voir le contrat de mesure dans Backend).
+            raise ValueError("prompt + generation exceeds n_ctx")
+        # reset() sets n_tokens back to 0: generate() then finds no common prefix and
+        # redoes the full prefill (see the measurement contract in Backend).
         llm.reset()
         eos = llm.token_eos()
         out: list[int] = []
         t_first = None
         t_start = time.perf_counter()
-        # API bas niveau plutôt que create_completion : un pas de l'itérateur = un token,
-        # alors que les chunks texte du streaming ne correspondent pas toujours à 1 token.
+        # Low-level API rather than create_completion: one iterator step = one token,
+        # whereas streamed text chunks do not always map to exactly one token.
         for tok in llm.generate(prompt_tokens, temp=0.0, reset=True):
             if t_first is None:
                 t_first = time.perf_counter()

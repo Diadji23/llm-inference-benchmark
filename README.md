@@ -1,39 +1,38 @@
-# llmbench — benchmark d'inférence LLM
+# llmbench — LLM inference benchmark
 
-Benchmark reproductible de l'inférence de petits LLM open source : TTFT, latence, débit,
-mémoire, puis effet de la quantification, du cache KV et du décodage spéculatif.
-Chaque expérience suit la démarche **hypothèse → protocole → mesures → conclusion**,
-et les résultats négatifs sont conservés.
+A reproducible benchmark of small open-source LLM inference: TTFT, latency, throughput,
+memory, then the effect of quantization, the KV cache and speculative decoding.
+Every experiment follows **hypothesis → protocol → measurements → conclusion**, and
+negative results are kept.
 
-## Matériel de référence
+## Reference hardware
 
-| Composant | Valeur | Conséquence |
+| Component | Value | Consequence |
 |---|---|---|
-| CPU | AMD Ryzen 5 7520U (Zen 2, 4 cœurs / 8 threads, AVX2 + FMA + F16C, pas d'AVX-512) | Inférence sur CPU : la mémoire est le goulot, pas le calcul |
-| RAM (WSL2) | 7,4 Gio visibles (hôte : 15,3 Go) | Modèles ≤ 1,5B ; un modèle 1,5B en FP32 (~6 Go) ne tient pas |
-| GPU | iGPU Radeon 610M, pas de CUDA | Les parties GPU (étape 4 à plus grande échelle) passent par un notebook Kaggle |
-| OS | Ubuntu 24.04 sous WSL2 | Le snapshot `results/env.json` est enregistré avec chaque run |
+| CPU | AMD Ryzen 5 7520U (Zen 2, 4 cores / 8 threads, AVX2 + FMA + F16C, no AVX-512) | CPU inference: memory is the bottleneck, not compute |
+| RAM (WSL2) | 7.4 GiB visible (host: 15.3 GB) | Models ≤ 1.5B; a 1.5B model in FP32 (~6 GB) does not fit |
+| GPU | Radeon 610M iGPU, no CUDA | GPU parts (step 4 at larger scale) run in a Kaggle notebook |
+| OS | Ubuntu 24.04 on WSL2 | The `env.json` snapshot is saved with every run |
 
-## Structure du dépôt
+## Repository layout
 
 ```
-configs/            une config YAML par expérience (modèles, prompts, répétitions)
+configs/            one YAML config per experiment (models, prompts, repetitions)
 src/llmbench/
-  env.py            snapshot matériel/logiciel joint à chaque résultat
-  backends/         interface commune : llama.cpp (GGUF) et Hugging Face
-  metrics.py        TTFT, latence, débit, agrégation (moyenne, écart-type, IC)
-  memory.py         mémoire de pointe (RSS du processus)
-  quality.py        perplexité, exact match, LLM-as-judge
-  runner.py         boucle d'expérience : warmup, répétitions, écriture JSONL
-scripts/            points d'entrée CLI (run_experiment.py, make_plots.py, check_env.py)
-data/prompts/       prompts et textes figés (versionnés pour la reproductibilité)
-results/<exp>/<run>/ raw.jsonl (mesures brutes) + env.json + summary.csv
-figures/            graphiques générés à partir de results/
-notebooks/          notebooks Kaggle pour les mesures sur GPU
-tests/              tests unitaires (métriques, agrégation) + smoke tests des backends
+  env.py            hardware/software snapshot attached to every result
+  backends/         common interface: llama.cpp (GGUF), Hugging Face to come
+  metrics.py        TTFT, latency, throughput, aggregation (mean, std, CI)
+  memory.py         peak memory (process RSS)
+  runner.py         experiment loop: warmup, repetitions, JSONL output
+scripts/            CLI entry points (run_experiment.py, make_plots.py, download_models.py, check_env.py)
+data/prompts/       frozen prompts and texts (versioned for reproducibility)
+results/<exp>/<run>/ raw.jsonl (raw measurements, not versioned) + env.json + config.yaml + summary.csv
+figures/            plots generated from results/
+notebooks/          Kaggle notebooks for GPU measurements
+tests/              unit tests (metrics, aggregation, memory sampling)
 ```
 
-## Installation
+## Setup
 
 ```bash
 uv venv && uv pip install -e ".[dev,llamacpp,hf]"
@@ -41,25 +40,27 @@ python scripts/check_env.py
 pytest
 ```
 
-## Expériences
+Run benchmarks **on AC power**: on battery the throughput drops by ~1.8× and variance
+explodes (see step 1).
 
-1. **Socle** : TTFT, latence, débit et mémoire sur 3 petits modèles — [résultats](#1-socle)
-2. **Quantification des poids** : F16, Q8_0, Q4_K_M (vitesse, mémoire, perplexité, exact match) — *à venir*
-3. **Cache KV** : effet de la longueur de contexte, cache KV quantifié — *à venir*
-4. **Décodage spéculatif** : gain de vitesse et taux d'acceptation — *à venir*
+## Experiments
 
-### 1. Socle
+1. **Baseline**: TTFT, latency, throughput and memory of 3 small models — [results](#1-baseline)
+2. **Weight quantization**: F16, Q8_0, Q4_K_M (speed, memory, perplexity, exact match) — *upcoming*
+3. **KV cache**: effect of context length, quantized KV cache — *upcoming*
+4. **Speculative decoding**: speedup and acceptance rate — *upcoming*
 
-**Hypothèse.** Sur CPU, le décodage est borné par la bande passante mémoire : chaque token
-relit tous les poids, donc le débit decode doit être à peu près inversement proportionnel à
-leur taille. Le prefill, lui, traite le prompt par lots : le TTFT doit croître moins vite
-que la longueur du prompt.
+### 1. Baseline
 
-**Protocole.** [`configs/01_baseline.yaml`](configs/01_baseline.yaml) — Qwen2.5-0.5B,
-Llama-3.2-1B et Qwen2.5-1.5B (Instruct), tous en Q4_K_M pour isoler l'effet de la taille ;
-llama.cpp, 4 threads, décodage greedy ; prompts de 32, 128 et 512 tokens tronqués avec le
-tokenizer de chaque modèle ; 128 tokens générés (EOS ignoré, longueur fixe) ; 2 générations
-de warmup puis 5 répétitions. Portable sur secteur.
+**Hypothesis.** On CPU, decoding is bound by memory bandwidth: every token re-reads all the
+weights, so decode throughput should be roughly inversely proportional to their size.
+Prefill processes the prompt in batches, so TTFT should grow more slowly than prompt length.
+
+**Protocol.** [`configs/01_baseline.yaml`](configs/01_baseline.yaml) — Qwen2.5-0.5B,
+Llama-3.2-1B and Qwen2.5-1.5B (Instruct), all in Q4_K_M to isolate the effect of size;
+llama.cpp, 4 threads, greedy decoding; prompts of 32, 128 and 512 tokens truncated with
+each model's own tokenizer; 128 generated tokens (EOS ignored, fixed length); 2 warmup
+generations then 5 repetitions. Laptop on AC power.
 
 ```bash
 python scripts/download_models.py configs/01_baseline.yaml
@@ -67,40 +68,40 @@ python scripts/run_experiment.py configs/01_baseline.yaml
 python scripts/make_plots.py results/01_baseline/<run_id>
 ```
 
-![Socle : TTFT, débit decode, mémoire](figures/01_baseline.png)
+![Baseline: TTFT, decode throughput, memory](figures/01_baseline.png)
 
-| Modèle (Q4_K_M) | Poids | TTFT 32 / 128 / 512 tok | Prefill @512 | Decode @128 | Pic RSS net |
+| Model (Q4_K_M) | Weights | TTFT 32 / 128 / 512 tok | Prefill @512 | Decode @128 | Net peak RSS |
 |---|---|---|---|---|---|
-| Qwen2.5-0.5B | 469 Mio | 0,64 / 1,28 / 3,93 s | 131 tok/s | 42,9 ± 1,5 tok/s | 631 Mio |
-| Llama-3.2-1B | 770 Mio | 1,30 / 2,55 / 8,54 s | 60 tok/s | 19,0 ± 1,4 tok/s | 1 357 Mio |
-| Qwen2.5-1.5B | 1 066 Mio | 1,45 / 3,33 / 11,65 s | 44 tok/s | 13,7 ± 2,6 tok/s | 1 775 Mio |
+| Qwen2.5-0.5B | 469 MiB | 0.64 / 1.28 / 3.93 s | 131 tok/s | 42.9 ± 1.5 tok/s | 631 MiB |
+| Llama-3.2-1B | 770 MiB | 1.30 / 2.55 / 8.54 s | 60 tok/s | 19.0 ± 1.4 tok/s | 1,357 MiB |
+| Qwen2.5-1.5B | 1,066 MiB | 1.45 / 3.33 / 11.65 s | 44 tok/s | 13.7 ± 2.6 tok/s | 1,775 MiB |
 
-± = demi-largeur de l'IC à 95 % (Student, n = 5). Résultats bruts et résumé :
+± = half-width of the 95% CI (Student, n = 5). Summary and run metadata:
 [`results/01_baseline/20261020-233651/`](results/01_baseline/20261020-233651/).
 
 **Conclusions.**
-- *Decode borné par la mémoire : confirmé pour les deux plus gros modèles.* Taille des poids
-  × débit decode donne une bande passante effective quasi identique : 15,3 Go/s pour
-  Llama-1B comme pour Qwen-1.5B. Qwen-0.5B atteint 21 Go/s, soit plus vite que ce que
-  prédit la seule taille ; cause non établie à ce stade (meilleure localité cache sur de
-  petites matrices ?). À vérifier à l'étape 2, où la taille varie à architecture fixe.
-- *Prefill sous-linéaire : confirmé.* Un prompt 16 × plus long (32 → 512) multiplie le TTFT
-  par 6 à 8 seulement, car le débit prefill monte avec la taille du lot (0,5B : 51 → 131
-  tok/s). Le prefill reste pourtant le poste dominant : à 512 tokens, attendre le premier
-  token prend plus de temps que générer les 128 suivants pour les trois modèles.
-- *Mémoire : les poids ne suffisent pas à prédire l'empreinte.* Le surcoût au-delà du
-  fichier GGUF (cache KV pour n_ctx = 2048, buffers de calcul) va de 160 Mio (0,5B) à
-  ~600–700 Mio (1B, 1,5B). Sa décomposition relève de l'étape 3 (cache KV).
+- *Decode is memory-bound: confirmed for the two larger models.* Weight size × decode
+  throughput gives almost the same effective bandwidth: 15.3 GB/s for both Llama-1B and
+  Qwen-1.5B. Qwen-0.5B reaches 21 GB/s, faster than size alone predicts; the cause is not
+  established yet (better cache locality on small matrices?). To be checked in step 2, where
+  size varies with the architecture held fixed.
+- *Prefill is sub-linear: confirmed.* A prompt 16× longer (32 → 512) multiplies TTFT by only
+  6 to 8, because prefill throughput rises with batch size (0.5B: 51 → 131 tok/s). Prefill
+  still dominates: at 512 tokens, waiting for the first token takes longer than generating
+  the next 128 for all three models.
+- *Memory: weight size alone does not predict the footprint.* The overhead beyond the GGUF
+  file (KV cache for n_ctx = 2048, compute buffers) ranges from 160 MiB (0.5B) to
+  ~600–700 MiB (1B, 1.5B). Breaking it down belongs to step 3 (KV cache).
 
-**Observations annexes (hors protocole, à garder en tête).**
-- *Alimentation.* Sur batterie (mode « Utilisation normale »), Qwen-0.5B tombait à 75 tok/s
-  en prefill et 24 tok/s en decode, avec ~40 % de variabilité du TTFT, contre 138 et 41
-  tok/s (~3 %) sur secteur. Tous les runs sont donc faits sur secteur.
-- *Threads.* 8 threads (SMT) donnent ~12 tok/s en decode contre ~24 avec 4 threads sur
-  batterie : les threads supplémentaires se disputent la même bande passante.
-- *Mesure mémoire.* Le RSS de départ grossit d'un modèle à l'autre (78 → 187 Mio, mémoire
-  non rendue à l'OS) ; le pic est donc rapporté net du RSS avant chargement.
+**Side observations (outside the protocol, worth keeping in mind).**
+- *Power.* On battery (Windows "Balanced" plan), Qwen-0.5B dropped to 75 tok/s prefill and
+  24 tok/s decode with ~40% TTFT variability, versus 138 and 41 tok/s (~3%) on AC power.
+  All runs are therefore done on AC power.
+- *Threads.* 8 threads (SMT) gave ~12 tok/s decode versus ~24 with 4 threads (measured on
+  battery): the extra threads compete for the same memory bandwidth.
+- *Memory measurement.* Baseline RSS grows from one model to the next (78 → 187 MiB, memory
+  not returned to the OS); peak memory is therefore reported net of the pre-load RSS.
 
-## Enseignements principaux
+## Key takeaways
 
-*À compléter à la fin.*
+*To be written at the end.*

@@ -1,9 +1,9 @@
-"""Mesure de la mémoire de pointe (RSS du processus).
+"""Peak memory measurement (process RSS).
 
-ru_maxrss donne le pic sur toute la vie du processus et ne se réinitialise pas : inutilisable
-pour comparer plusieurs modèles dans un même run. On échantillonne donc le RSS dans un
-thread pendant une fenêtre donnée. Limite connue : un pic plus court que la période
-d'échantillonnage peut être manqué (sous-estimation de l'ordre de quelques Mo).
+ru_maxrss gives the peak over the whole process lifetime and cannot be reset: useless for
+comparing several models within one run. RSS is therefore sampled from a thread over a
+given window. Known limitation: a spike shorter than the sampling period can be missed
+(underestimate on the order of a few MB).
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ def current_rss_mib() -> float:
 
 
 class PeakRSSSampler:
-    """Context manager : `with PeakRSSSampler() as s: ...` puis `s.peak_mib`."""
+    """Context manager: `with PeakRSSSampler() as s: ...` then `s.peak_mib`."""
 
     def __init__(self, interval_s: float = 0.01):
         self.interval_s = interval_s

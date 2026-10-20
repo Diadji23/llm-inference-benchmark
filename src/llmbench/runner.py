@@ -1,10 +1,10 @@
-"""Boucle d'expérience : chargement, warmup, répétitions, écriture des résultats.
+"""Experiment loop: loading, warmup, repetitions, writing results.
 
-Sortie dans results/<experiment>/<run_id>/ :
-  config.yaml  copie de la config utilisée
-  env.json     snapshot matériel/logiciel
-  raw.jsonl    une ligne par génération mesurée
-  summary.csv  agrégats par (modèle, longueur de prompt)
+Output in results/<experiment>/<run_id>/:
+  config.yaml  copy of the config used
+  env.json     hardware/software snapshot
+  raw.jsonl    one line per measured generation
+  summary.csv  aggregates per (model, prompt length)
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def run_experiment(config_path: Path, results_root: Path = Path("results")) -> P
 
     summary = summarize_run(out_dir / "raw.jsonl")
     summary.to_csv(out_dir / "summary.csv", index=False)
-    print(f"\n→ résultats dans {out_dir}")
+    print(f"\n-> results in {out_dir}")
     return out_dir
 
 
@@ -62,15 +62,15 @@ def _run_model(model: dict, cfg: dict, source_text: str, gen: dict, reps: int, w
     backend.load()
     load_s = time.perf_counter() - t0
     rss_loaded = current_rss_mib()
-    print(f"\n[{model['name']}] chargé en {load_s:.1f} s, RSS {rss_loaded:.0f} Mio")
+    print(f"\n[{model['name']}] loaded in {load_s:.1f} s, RSS {rss_loaded:.0f} MiB")
 
     try:
         prompts = {n: backend.truncate_to_tokens(source_text, n) for n in cfg["prompts"]["lengths"]}
         for _ in range(warmup):
             backend.generate(prompts[min(prompts)], gen["max_new_tokens"], gen["ignore_eos"])
 
-        # Répétitions en boucle externe : une dérive lente (chauffe CPU, throttling) se
-        # répartit sur toutes les longueurs au lieu de pénaliser la dernière.
+        # Repetitions in the outer loop: a slow drift (CPU heating, throttling) is spread
+        # over all prompt lengths instead of penalizing the last one.
         for rep in range(reps):
             for n_prompt, tokens in prompts.items():
                 with PeakRSSSampler() as mem:
@@ -93,15 +93,15 @@ def _run_model(model: dict, cfg: dict, source_text: str, gen: dict, reps: int, w
                 raw.flush()
                 t = res.timing
                 print(f"  rep {rep} | prompt {n_prompt:>4} | TTFT {t.ttft_s * 1e3:7.1f} ms | "
-                      f"decode {t.decode_tps:6.1f} tok/s | RSS {mem.peak_mib:6.0f} Mio")
+                      f"decode {t.decode_tps:6.1f} tok/s | RSS {mem.peak_mib:6.0f} MiB")
     finally:
         backend.close()
 
 
 def summarize_run(raw_path: Path) -> pd.DataFrame:
     df = pd.read_json(raw_path, lines=True)
-    # Le RSS de départ grossit d'un modèle à l'autre (mémoire non rendue à l'OS après
-    # close()) : le pic net est la seule mesure comparable entre modèles d'un même run.
+    # Baseline RSS grows from one model to the next (memory not returned to the OS after
+    # close()): the net peak is the only figure comparable across models of one run.
     df["net_peak_rss_mib"] = df["peak_rss_mib"] - df["rss_before_load_mib"]
     rows = []
     for (model, quant, n_prompt), g in df.groupby(["model", "quant", "prompt_len"], dropna=False):

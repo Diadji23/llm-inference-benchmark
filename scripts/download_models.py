@@ -1,6 +1,6 @@
-"""Télécharge les fichiers GGUF référencés par une config dans models/.
+"""Download the GGUF files referenced by a config into models/.
 
-Usage : python scripts/download_models.py configs/01_baseline.yaml
+Usage: python scripts/download_models.py configs/01_baseline.yaml
 """
 
 import argparse

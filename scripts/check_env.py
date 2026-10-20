@@ -1,6 +1,6 @@
-"""Affiche et sauvegarde le snapshot matériel/logiciel (étape 0).
+"""Print and save the hardware/software snapshot (step 0).
 
-Usage : python scripts/check_env.py [--out results/env.json]
+Usage: python scripts/check_env.py [--out results/env.json]
 """
 
 import argparse
@@ -19,7 +19,7 @@ def main() -> None:
     print(json.dumps(env, indent=2, ensure_ascii=False))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(env, indent=2, ensure_ascii=False))
-    print(f"\n→ sauvegardé dans {args.out}")
+    print(f"\n-> saved to {args.out}")
 
 
 if __name__ == "__main__":

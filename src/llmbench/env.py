@@ -1,7 +1,7 @@
-"""Capture de l'environnement d'exécution.
+"""Runtime environment capture.
 
-Un chiffre de latence sans le matériel, les versions et la charge machine n'est pas
-interprétable. Chaque run de benchmark enregistre donc ce snapshot à côté de ses mesures.
+A latency number without the hardware, package versions and machine load cannot be
+interpreted. Every benchmark run therefore saves this snapshot next to its measurements.
 """
 
 from __future__ import annotations
@@ -14,15 +14,15 @@ from datetime import UTC, datetime
 
 import psutil
 
-# Jeux d'instructions SIMD qui conditionnent directement la vitesse des matmuls sur CPU
-# (et donc quels formats quantifiés llama.cpp peut accélérer).
+# SIMD instruction sets that directly drive matmul speed on CPU
+# (and therefore which quantized formats llama.cpp can accelerate).
 SIMD_FLAGS = ("avx", "avx2", "fma", "f16c", "avx512f", "avx512_vnni", "avx512_bf16", "avx_vnni", "amx_tile")
 
 TRACKED_PACKAGES = ("torch", "transformers", "llama_cpp_python", "optimum-quanto", "numpy")
 
 
 def _cpu_info() -> dict:
-    # platform.processor() renvoie juste "x86_64" sous Linux : /proc/cpuinfo est plus précis.
+    # platform.processor() just returns "x86_64" on Linux: /proc/cpuinfo is more precise.
     model, flags = None, set()
     try:
         with open("/proc/cpuinfo") as f:
@@ -93,6 +93,6 @@ def collect_env() -> dict:
         "gpus": _gpu_info(),
         "packages": _package_versions(),
         "git_commit": _git_commit(),
-        # Charge au moment du run : un benchmark lancé sur une machine occupée est biaisé.
+        # Load at run time: a benchmark run on a busy machine is biased.
         "load_avg_1m": os.getloadavg()[0] if hasattr(os, "getloadavg") else None,
     }

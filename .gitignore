@@ -3,9 +3,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
-# Poids des modèles : jamais dans git.
+# Model weights: never in git.
 models/
 *.gguf
 *.safetensors
-# Résultats bruts volumineux : on versionne les résumés (summary.csv) et les figures.
+# Large raw results: only summaries (summary.csv) and figures are versioned.
 results/**/raw.jsonl

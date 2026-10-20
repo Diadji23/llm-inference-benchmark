@@ -1,11 +1,11 @@
-"""Métriques de latence/débit et agrégation statistique.
+"""Latency/throughput metrics and statistical aggregation.
 
-Définitions (une génération = un prompt de n_prompt tokens → n_generated tokens) :
-  - TTFT        : temps jusqu'au premier token généré (≈ prefill + 1 pas de décodage)
-  - latence     : temps total de la génération
-  - débit prefill : n_prompt / TTFT                (tokens/s, borné par le calcul)
-  - débit decode  : (n_generated - 1) / (t_end - t_first)  (tokens/s, borné par la mémoire)
-Le premier token est exclu du débit decode : il est produit par le prefill.
+Definitions (one generation = a prompt of n_prompt tokens -> n_generated tokens):
+  - TTFT               : time to the first generated token (~ prefill + 1 decode step)
+  - latency            : total generation time
+  - prefill throughput : n_prompt / TTFT                         (tokens/s, compute-bound)
+  - decode throughput  : (n_generated - 1) / (t_end - t_first)   (tokens/s, memory-bound)
+The first token is excluded from decode throughput: it is produced by the prefill.
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# Quantiles bilatéraux à 97,5 % de la loi de Student, ddl 1 à 30. Évite une dépendance à
-# scipy pour un seul nombre ; au-delà de 30 ddl, l'approximation normale suffit.
+# Two-sided 97.5% quantiles of Student's t distribution, df 1 to 30. Avoids a scipy
+# dependency for a single number; beyond 30 df the normal approximation is good enough.
 _T_975 = (
     12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228,
     2.201, 2.179, 2.160, 2.145, 2.131, 2.120, 2.110, 2.101, 2.093, 2.086,
@@ -26,7 +26,7 @@ _T_975 = (
 
 @dataclass(frozen=True)
 class GenerationTiming:
-    """Horodatages bruts d'une génération (secondes, horloge time.perf_counter)."""
+    """Raw timestamps of one generation (seconds, time.perf_counter clock)."""
 
     t_start: float
     t_first_token: float
@@ -71,10 +71,10 @@ def t_critical(df: int) -> float:
 
 
 def summarize(values) -> dict:
-    """Moyenne, écart-type, médiane, p95 et IC à 95 % (Student) d'une série de mesures.
+    """Mean, std, median, p95 and 95% CI (Student) of a series of measurements.
 
-    Les NaN sont ignorés. L'IC suppose des répétitions indépendantes : c'est pourquoi le
-    runner fait un warmup et répète des générations complètes plutôt que des tokens.
+    NaNs are ignored. The CI assumes independent repetitions: this is why the runner
+    warms up first and repeats whole generations rather than individual tokens.
     """
     x = np.asarray(values, dtype=float)
     x = x[~np.isnan(x)]
