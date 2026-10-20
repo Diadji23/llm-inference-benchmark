@@ -22,7 +22,9 @@ from llmbench.env import collect_env
 from llmbench.memory import PeakRSSSampler, current_rss_mib
 from llmbench.metrics import summarize
 
-SUMMARY_METRICS = ("ttft_s", "latency_s", "prefill_tps", "decode_tps", "peak_rss_mib")
+SUMMARY_METRICS = (
+    "ttft_s", "latency_s", "prefill_tps", "decode_tps", "peak_rss_mib", "net_peak_rss_mib",
+)
 
 
 def load_config(path: Path) -> dict:
@@ -98,6 +100,9 @@ def _run_model(model: dict, cfg: dict, source_text: str, gen: dict, reps: int, w
 
 def summarize_run(raw_path: Path) -> pd.DataFrame:
     df = pd.read_json(raw_path, lines=True)
+    # Le RSS de départ grossit d'un modèle à l'autre (mémoire non rendue à l'OS après
+    # close()) : le pic net est la seule mesure comparable entre modèles d'un même run.
+    df["net_peak_rss_mib"] = df["peak_rss_mib"] - df["rss_before_load_mib"]
     rows = []
     for (model, quant, n_prompt), g in df.groupby(["model", "quant", "prompt_len"], dropna=False):
         row = {"model": model, "quant": quant, "prompt_len": n_prompt,
