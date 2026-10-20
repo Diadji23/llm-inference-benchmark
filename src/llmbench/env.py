@@ -10,7 +10,7 @@ import importlib.metadata
 import os
 import platform
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import psutil
 
@@ -72,7 +72,7 @@ def _package_versions() -> dict:
 def _git_commit() -> str | None:
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5
+            ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5, check=False
         )
         return out.stdout.strip() or None
     except (OSError, subprocess.TimeoutExpired):
@@ -82,7 +82,7 @@ def _git_commit() -> str | None:
 def collect_env() -> dict:
     mem = psutil.virtual_memory()
     return {
-        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
         "hostname": platform.node(),
         "os": platform.platform(),
         "is_wsl": "microsoft" in platform.release().lower(),

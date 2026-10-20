@@ -13,7 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Backend llama.cpp (GGUF) : étapes 1 et 2, rapide sur CPU.
-llamacpp = ["llama-cpp-python>=0.3"]
+llamacpp = ["llama-cpp-python>=0.3", "huggingface_hub>=0.24"]
 # Backend Hugging Face : étapes 3 (cache KV) et 4 (décodage spéculatif).
 hf = ["torch>=2.4", "transformers>=4.45", "accelerate>=0.34", "optimum-quanto>=0.2"]
 dev = ["pytest>=8", "ruff>=0.6"]

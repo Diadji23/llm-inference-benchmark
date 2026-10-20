@@ -1,0 +1,41 @@
+# Étape 1 — socle : TTFT, latence, débit et mémoire de trois petits modèles.
+#
+# Hypothèse : sur CPU, le décodage est borné par la bande passante mémoire, donc le débit
+# decode doit être à peu près inversement proportionnel à la taille des poids, alors que le
+# prefill (borné par le calcul) doit croître moins vite que linéairement avec la longueur
+# du prompt grâce au traitement par lots.
+#
+# Tous les modèles en Q4_K_M pour isoler l'effet de la taille ; la quantification est
+# l'objet de l'étape 2.
+experiment: 01_baseline
+backend: llamacpp
+backend_args:
+  n_ctx: 2048
+  n_threads: 4      # = cœurs physiques ; l'hyperthreading n'aide pas un calcul borné mémoire
+  n_batch: 512
+  seed: 0
+
+models:
+  - name: qwen2.5-0.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+    path: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  - name: llama-3.2-1b
+    quant: Q4_K_M
+    repo: bartowski/Llama-3.2-1B-Instruct-GGUF
+    path: models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+  - name: qwen2.5-1.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF
+    path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+
+prompts:
+  source: data/prompts/source_en.txt
+  lengths: [32, 128, 512]   # en tokens, tronqués avec le tokenizer de chaque modèle
+
+generation:
+  max_new_tokens: 128
+  ignore_eos: true          # longueur de sortie fixe : sinon le débit dépend du contenu
+
+warmup: 2
+repetitions: 5
