@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+# Poids des modèles : jamais dans git.
+models/
+*.gguf
+*.safetensors
+# Résultats bruts volumineux : on versionne les résumés (summary.csv) et les figures.
+results/**/raw.jsonl
