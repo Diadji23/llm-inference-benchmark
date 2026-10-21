@@ -49,8 +49,8 @@ class LlamaCppBackend(Backend):
             verbose=False,
         )
 
-    def tokenize(self, text: str) -> list[int]:
-        return self._llm.tokenize(text.encode("utf-8"), add_bos=True)
+    def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
+        return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)
 
     def detokenize(self, tokens: list[int]) -> str:
         return self._llm.detokenize(tokens).decode("utf-8", errors="replace")

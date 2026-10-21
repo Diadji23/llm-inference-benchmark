@@ -103,3 +103,74 @@ def evaluate_text(backend: Backend, tokens: list[int], ctx: int, n_windows: int,
         out["kl_coarse_mean"] = float(kl.mean())
         out["kl_coarse_p99"] = float(np.percentile(kl, 99))
     return out
+
+
+# --- Multiple-choice exact match (MMLU-style) -------------------------------------------
+#
+# The model reads the question and the four options, then "Answer:". Its answer is the
+# letter among " A".." D" with the highest logit at that last position: one prefill per
+# question, no generation, and no way to fail on output format.
+
+LETTERS = "ABCD"
+
+
+def format_mcq(item: dict) -> str:
+    subject = item["subject"].replace("_", " ")
+    lines = [f"The following is a multiple choice question about {subject}.", "",
+             item["question"]]
+    lines += [f"{letter}. {choice}" for letter, choice in zip(LETTERS, item["choices"])]
+    lines.append("Answer:")
+    return "\n".join(lines)
+
+
+def letter_token_ids(backend: Backend) -> list[int]:
+    ids = []
+    for letter in LETTERS:
+        tok = backend.tokenize(f" {letter}", add_bos=False)
+        if len(tok) != 1:
+            raise ValueError(f"' {letter}' is not a single token for this tokenizer: {tok}")
+        ids.append(tok[0])
+    return ids
+
+
+def mcnemar_exact_p(b: int, c: int) -> float:
+    """Two-sided exact McNemar test on the discordant pairs (b, c).
+
+    Under "both models are equally good", each question one model gets right and the other
+    gets wrong is a fair coin flip: P(split at least this uneven) under Binomial(b+c, 1/2).
+    """
+    n = b + c
+    if n == 0:
+        return 1.0
+    tail = sum(math.comb(n, i) for i in range(min(b, c) + 1)) / 2**n
+    return min(1.0, 2 * tail)
+
+
+def evaluate_mcq(backend: Backend, items: list[dict],
+                 reference_preds: np.ndarray | None = None) -> dict:
+    ids = letter_token_ids(backend)
+    preds = np.array([
+        int(np.argmax(backend.logits(backend.tokenize(format_mcq(item)))[-1][ids]))
+        for item in items
+    ])
+    answers = np.array([item["answer"] for item in items])
+    correct = preds == answers
+    acc = float(correct.mean())
+    out = {
+        "n_questions": len(items),
+        "accuracy": acc,
+        # Normal approximation of the binomial CI: enough at n = 200 away from 0 and 1.
+        "accuracy_ci95": 1.96 * math.sqrt(acc * (1 - acc) / len(items)),
+        "preds": preds,
+    }
+    if reference_preds is not None:
+        ref_correct = reference_preds == answers
+        fixed = int((correct & ~ref_correct).sum())
+        broken = int((~correct & ref_correct).sum())
+        out.update({
+            "answer_agreement": float((preds == reference_preds).mean()),
+            "fixed_vs_ref": fixed,
+            "broken_vs_ref": broken,
+            "mcnemar_p": mcnemar_exact_p(fixed, broken),
+        })
+    return out

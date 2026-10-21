@@ -2,7 +2,15 @@ import numpy as np
 import pytest
 
 from llmbench.backends.base import Backend
-from llmbench.quality import coarse_kl, evaluate_text, log_softmax, window_starts
+from llmbench.quality import (
+    coarse_kl,
+    evaluate_mcq,
+    evaluate_text,
+    format_mcq,
+    log_softmax,
+    mcnemar_exact_p,
+    window_starts,
+)
 
 VOCAB = 50
 
@@ -80,3 +88,50 @@ def test_window_starts_rejects_short_text():
     assert window_starts(300, 64, 4) == [0, 64, 128, 192]
     with pytest.raises(ValueError):
         window_starts(100, 64, 4)
+
+
+# --- Multiple choice -----------------------------------------------------------------
+
+LETTER_IDS = {" A": 1, " B": 2, " C": 3, " D": 4}
+
+
+class AlwaysLetter(FakeBackend):
+    """Answers the same letter to every question."""
+
+    def __init__(self, letter: str):
+        super().__init__("uniform")
+        self.letter_id = LETTER_IDS[f" {letter}"]
+
+    def tokenize(self, text, add_bos=True):
+        return [LETTER_IDS[text]] if text in LETTER_IDS else [0] * 10
+
+    def logits(self, tokens):
+        out = np.zeros((len(tokens), VOCAB))
+        out[-1, self.letter_id] = 10.0
+        return out
+
+
+ITEMS = [{"subject": "x", "question": "q", "choices": ["a", "b", "c", "d"], "answer": a}
+         for a in (3, 3, 3, 0)]
+
+
+def test_format_mcq_ends_with_answer_prompt():
+    text = format_mcq({"subject": "high_school_physics", "question": "Why?",
+                       "choices": ["1", "2", "3", "4"], "answer": 0})
+    assert "about high school physics" in text
+    assert "\nD. 4\nAnswer:" in text
+
+
+def test_mcq_accuracy_and_paired_counts():
+    ref = evaluate_mcq(AlwaysLetter("D"), ITEMS)
+    assert ref["accuracy"] == pytest.approx(0.75)
+    other = evaluate_mcq(AlwaysLetter("A"), ITEMS, reference_preds=ref["preds"])
+    assert other["accuracy"] == pytest.approx(0.25)
+    assert other["answer_agreement"] == 0.0
+    assert (other["fixed_vs_ref"], other["broken_vs_ref"]) == (1, 3)
+
+
+def test_mcnemar_exact_p():
+    assert mcnemar_exact_p(0, 0) == 1.0
+    assert mcnemar_exact_p(0, 6) == pytest.approx(2 / 64)
+    assert mcnemar_exact_p(3, 3) == 1.0

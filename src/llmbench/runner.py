@@ -32,13 +32,23 @@ def load_config(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def run_experiment(config_path: Path, results_root: Path = Path("results")) -> Path:
-    cfg = load_config(config_path)
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+def new_run_dir(config_path: Path, cfg: dict, results_root: Path, prefix: str = "") -> Path:
+    """results/<experiment>/<prefix><timestamp>/ with a copy of the config and env.json."""
+    run_id = prefix + datetime.now().strftime("%Y%m%d-%H%M%S")
     out_dir = results_root / cfg["experiment"] / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.yaml").write_text(Path(config_path).read_text())
     (out_dir / "env.json").write_text(json.dumps(collect_env(), indent=2, ensure_ascii=False))
+    return out_dir
+
+
+def model_label(model: dict) -> str:
+    return f"{model['name']} {model['quant']}" if model.get("quant") else model["name"]
+
+
+def run_experiment(config_path: Path, results_root: Path = Path("results")) -> Path:
+    cfg = load_config(config_path)
+    out_dir = new_run_dir(config_path, cfg, results_root)
 
     source_text = Path(cfg["prompts"]["source"]).read_text()
     gen = cfg["generation"]
@@ -62,7 +72,7 @@ def _run_model(model: dict, cfg: dict, source_text: str, gen: dict, reps: int, w
     backend.load()
     load_s = time.perf_counter() - t0
     rss_loaded = current_rss_mib()
-    print(f"\n[{model['name']}] loaded in {load_s:.1f} s, RSS {rss_loaded:.0f} MiB")
+    print(f"\n[{model_label(model)}] loaded in {load_s:.1f} s, RSS {rss_loaded:.0f} MiB")
 
     try:
         prompts = {n: backend.truncate_to_tokens(source_text, n) for n in cfg["prompts"]["lengths"]}

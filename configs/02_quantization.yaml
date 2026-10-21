@@ -48,3 +48,16 @@ generation:
 
 warmup: 2
 repetitions: 5
+
+# Quality (scripts/run_quality.py). Each family's reference variant runs first; the
+# others are compared to it on the same tokens and the same questions.
+quality:
+  reference: F16
+  n_ctx: 1024               # longest MMLU prompt in the sample is 498 tokens: keeps margin
+  perplexity:
+    source: data/eval/wikitext2_test_extract.txt
+    window: 512             # score the second half of each window (llama.cpp convention)
+    n_windows: 16           # 16 x 256 = 4,096 scored tokens
+    top_k: 20               # reference top-k kept for the coarse KL
+  mcq:
+    source: data/eval/mmlu_200.jsonl
