@@ -1,4 +1,4 @@
-"""Experiment loop: loading, warmup, repetitions, writing results.
+"""Experiment loop: interleaved rounds of load, warmup, measurement, writing results.
 
 Output in results/<experiment>/<run_id>/:
   config.yaml  copy of the config used
@@ -10,15 +10,17 @@ Output in results/<experiment>/<run_id>/:
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import yaml
 
 from llmbench.backends import make_backend
-from llmbench.env import collect_env
+from llmbench.env import collect_env, machine_canary_ms
 from llmbench.memory import PeakRSSSampler, current_rss_mib
 from llmbench.metrics import summarize
 
@@ -46,17 +48,27 @@ def model_label(model: dict) -> str:
     return f"{model['name']} {model['quant']}" if model.get("quant") else model["name"]
 
 
+def schedule(models: list[dict], rounds: int, seed: int = 0) -> list[tuple[int, dict]]:
+    """Interleaved plan: every round visits each model once, in a freshly shuffled order.
+
+    Measuring one model in a block lets a temporary disturbance (another program, a
+    background update) land entirely on that model. Interleaving spreads it over
+    different models in each round, and the order is seeded so the plan is reproducible.
+    """
+    rng = np.random.default_rng(seed)
+    return [(r, models[i]) for r in range(rounds) for i in rng.permutation(len(models))]
+
+
 def run_experiment(config_path: Path, results_root: Path = Path("results")) -> Path:
     cfg = load_config(config_path)
     out_dir = new_run_dir(config_path, cfg, results_root)
-
     source_text = Path(cfg["prompts"]["source"]).read_text()
-    gen = cfg["generation"]
-    reps, warmup = cfg["repetitions"], cfg["warmup"]
+    plan = schedule(cfg["models"], cfg["repetitions"], cfg.get("schedule_seed", 0))
 
     with open(out_dir / "raw.jsonl", "w") as raw:
-        for model in cfg["models"]:
-            _run_model(model, cfg, source_text, gen, reps, warmup, raw)
+        for i, (rnd, model) in enumerate(plan):
+            print(f"\n[{i + 1}/{len(plan)}] round {rnd}", end=" ")
+            _measure_once(model, rnd, cfg, source_text, raw)
 
     summary = summarize_run(out_dir / "raw.jsonl")
     summary.to_csv(out_dir / "summary.csv", index=False)
@@ -64,46 +76,51 @@ def run_experiment(config_path: Path, results_root: Path = Path("results")) -> P
     return out_dir
 
 
-def _run_model(model: dict, cfg: dict, source_text: str, gen: dict, reps: int, warmup: int,
-               raw) -> None:
+def _measure_once(model: dict, rnd: int, cfg: dict, source_text: str, raw) -> None:
+    """Load one model, warm it up, measure each prompt length once, unload it."""
+    gen = cfg["generation"]
     backend = make_backend(cfg["backend"], model_path=model["path"], **cfg.get("backend_args", {}))
     rss_before = current_rss_mib()
     t0 = time.perf_counter()
     backend.load()
     load_s = time.perf_counter() - t0
     rss_loaded = current_rss_mib()
-    print(f"\n[{model_label(model)}] loaded in {load_s:.1f} s, RSS {rss_loaded:.0f} MiB")
+    print(f"{model_label(model)}: loaded in {load_s:.1f} s, RSS {rss_loaded:.0f} MiB", flush=True)
 
     try:
         prompts = {n: backend.truncate_to_tokens(source_text, n) for n in cfg["prompts"]["lengths"]}
-        for _ in range(warmup):
-            backend.generate(prompts[min(prompts)], gen["max_new_tokens"], gen["ignore_eos"])
+        # A short generation reads every weight once: pages the model in and warms caches.
+        for _ in range(cfg["warmup"]):
+            backend.generate(prompts[min(prompts)], cfg.get("warmup_new_tokens", 16))
 
-        # Repetitions in the outer loop: a slow drift (CPU heating, throttling) is spread
-        # over all prompt lengths instead of penalizing the last one.
-        for rep in range(reps):
-            for n_prompt, tokens in prompts.items():
-                with PeakRSSSampler() as mem:
-                    res = backend.generate(tokens, gen["max_new_tokens"], gen["ignore_eos"])
-                record = {
-                    "experiment": cfg["experiment"],
-                    "model": model["name"],
-                    "quant": model.get("quant"),
-                    "backend": backend.name,
-                    "prompt_len": n_prompt,
-                    "rep": rep,
-                    **res.timing.as_dict(),
-                    "peak_rss_mib": mem.peak_mib,
-                    "rss_before_load_mib": rss_before,
-                    "rss_loaded_mib": rss_loaded,
-                    "load_s": load_s,
-                    "text_head": res.text[:80],
-                }
-                raw.write(json.dumps(record, ensure_ascii=False) + "\n")
-                raw.flush()
-                t = res.timing
-                print(f"  rep {rep} | prompt {n_prompt:>4} | TTFT {t.ttft_s * 1e3:7.1f} ms | "
-                      f"decode {t.decode_tps:6.1f} tok/s | RSS {mem.peak_mib:6.0f} MiB")
+        for n_prompt, tokens in prompts.items():
+            canary = machine_canary_ms()
+            with PeakRSSSampler() as mem:
+                res = backend.generate(tokens, gen["max_new_tokens"], gen["ignore_eos"])
+            record = {
+                "experiment": cfg["experiment"],
+                "model": model["name"],
+                "quant": model.get("quant"),
+                "backend": backend.name,
+                "prompt_len": n_prompt,
+                "rep": rnd,
+                **res.timing.as_dict(),
+                "peak_rss_mib": mem.peak_mib,
+                "rss_before_load_mib": rss_before,
+                "rss_loaded_mib": rss_loaded,
+                "load_s": load_s,
+                # Machine state, to spot disturbed measurements afterwards.
+                "unix_time": time.time(),
+                "canary_ms": canary,
+                "load_avg_1m": os.getloadavg()[0],
+                "text_head": res.text[:80],
+            }
+            raw.write(json.dumps(record, ensure_ascii=False) + "\n")
+            raw.flush()
+            t = res.timing
+            print(f"  prompt {n_prompt:>4} | TTFT {t.ttft_s * 1e3:7.1f} ms | "
+                  f"decode {t.decode_tps:6.1f} tok/s | RSS {mem.peak_mib:6.0f} MiB | "
+                  f"canary {canary:5.1f} ms", flush=True)
     finally:
         backend.close()
 
@@ -117,7 +134,7 @@ def summarize_run(raw_path: Path) -> pd.DataFrame:
     for (model, quant, n_prompt), g in df.groupby(["model", "quant", "prompt_len"], dropna=False):
         row = {"model": model, "quant": quant, "prompt_len": n_prompt,
                "n_generated": int(g["n_generated_tokens"].median()),
-               "load_s": g["load_s"].iloc[0]}
+               "load_s": g["load_s"].median()}
         for metric in SUMMARY_METRICS:
             s = summarize(g[metric])
             row["n"] = s["n"]

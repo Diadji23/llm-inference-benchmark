@@ -35,5 +35,6 @@ generation:
   max_new_tokens: 128
   ignore_eos: true          # fixed output length: otherwise throughput depends on content
 
-warmup: 2
-repetitions: 5
+warmup: 2                 # short (16-token) generations after each load, not measured
+repetitions: 5            # interleaved rounds: each visits every model once, shuffled order
+schedule_seed: 0

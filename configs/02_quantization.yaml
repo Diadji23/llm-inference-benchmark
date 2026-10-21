@@ -46,8 +46,9 @@ generation:
   max_new_tokens: 128
   ignore_eos: true
 
-warmup: 2
-repetitions: 5
+warmup: 2                 # short (16-token) generations after each load, not measured
+repetitions: 5            # interleaved rounds: each visits every model once, shuffled order
+schedule_seed: 0
 
 # Quality (scripts/run_quality.py). Each family's reference variant runs first; the
 # others are compared to it on the same tokens and the same questions.

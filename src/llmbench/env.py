@@ -10,8 +10,10 @@ import importlib.metadata
 import os
 import platform
 import subprocess
+import time
 from datetime import UTC, datetime
 
+import numpy as np
 import psutil
 
 # SIMD instruction sets that directly drive matmul speed on CPU
@@ -77,6 +79,27 @@ def _git_commit() -> str | None:
         return out.stdout.strip() or None
     except (OSError, subprocess.TimeoutExpired):
         return None
+
+
+_CANARY_BUF: np.ndarray | None = None
+
+
+def machine_canary_ms(repeats: int = 5) -> float:
+    """Median time to sum a fixed 32 MiB array: a tiny memory-bound probe, like decoding.
+
+    Under WSL2 the load average only sees Linux processes and steal time is not reported,
+    so activity on the Windows host is invisible. A probe that slows down when the host
+    competes for CPU or memory bandwidth catches it whatever its cause.
+    """
+    global _CANARY_BUF
+    if _CANARY_BUF is None:
+        _CANARY_BUF = np.ones(8 * 2**20, dtype=np.float32)
+    times = []
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        _CANARY_BUF.sum()
+        times.append((time.perf_counter() - t0) * 1e3)
+    return float(np.median(times))
 
 
 def collect_env() -> dict:
