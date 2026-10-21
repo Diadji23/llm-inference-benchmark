@@ -28,6 +28,7 @@ def test_summarize_known_values():
     assert s["mean"] == pytest.approx(3.0)
     assert s["std"] == pytest.approx(math.sqrt(2.5))
     assert s["median"] == pytest.approx(3.0)
+    assert (s["q25"], s["q75"]) == (pytest.approx(2.0), pytest.approx(4.0))
     half = 2.776 * math.sqrt(2.5) / math.sqrt(5)
     assert s["ci95_low"] == pytest.approx(3.0 - half)
     assert s["ci95_high"] == pytest.approx(3.0 + half)

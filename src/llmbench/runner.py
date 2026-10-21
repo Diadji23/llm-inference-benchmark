@@ -138,7 +138,7 @@ def summarize_run(raw_path: Path) -> pd.DataFrame:
         for metric in SUMMARY_METRICS:
             s = summarize(g[metric])
             row["n"] = s["n"]
-            for stat in ("mean", "std", "median", "ci95_low", "ci95_high"):
+            for stat in ("mean", "std", "median", "q25", "q75", "ci95_low", "ci95_high"):
                 row[f"{metric}_{stat}"] = s[stat]
         rows.append(row)
     return pd.DataFrame(rows)

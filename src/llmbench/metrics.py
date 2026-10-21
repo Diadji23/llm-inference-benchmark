@@ -71,7 +71,7 @@ def t_critical(df: int) -> float:
 
 
 def summarize(values) -> dict:
-    """Mean, std, median, p95 and 95% CI (Student) of a series of measurements.
+    """Mean, std, median, quartiles, p95 and 95% CI (Student) of a series of measurements.
 
     NaNs are ignored. The CI assumes independent repetitions: this is why the runner
     warms up first and repeats whole generations rather than individual tokens.
@@ -81,7 +81,8 @@ def summarize(values) -> dict:
     n = x.size
     if n == 0:
         return {"n": 0, "mean": math.nan, "std": math.nan, "median": math.nan,
-                "p95": math.nan, "ci95_low": math.nan, "ci95_high": math.nan}
+                "q25": math.nan, "q75": math.nan, "p95": math.nan,
+                "ci95_low": math.nan, "ci95_high": math.nan}
     mean = float(x.mean())
     std = float(x.std(ddof=1)) if n > 1 else math.nan
     half = t_critical(n - 1) * std / math.sqrt(n) if n > 1 else math.nan
@@ -90,6 +91,9 @@ def summarize(values) -> dict:
         "mean": mean,
         "std": std,
         "median": float(np.median(x)),
+        # Quartiles: the spread that goes with the median, robust to a single outlier.
+        "q25": float(np.percentile(x, 25)),
+        "q75": float(np.percentile(x, 75)),
         "p95": float(np.percentile(x, 95)),
         "ci95_low": mean - half,
         "ci95_high": mean + half,
