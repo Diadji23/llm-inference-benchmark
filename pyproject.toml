@@ -16,7 +16,8 @@ dependencies = [
 llamacpp = ["llama-cpp-python>=0.3", "huggingface_hub>=0.24"]
 # Hugging Face backend: steps 3 (KV cache) and 4 (speculative decoding).
 hf = ["torch>=2.4", "transformers>=4.45", "accelerate>=0.34", "optimum-quanto>=0.2"]
-dev = ["pytest>=8", "ruff>=0.6"]
+# pyarrow: only to read the parquet sources in scripts/prepare_eval_data.py.
+dev = ["pytest>=8", "ruff>=0.6", "pyarrow>=15"]
 
 # Without this, uv would install torch with CUDA (~2.5 GB wasted: no NVIDIA GPU here).
 [tool.uv.sources]

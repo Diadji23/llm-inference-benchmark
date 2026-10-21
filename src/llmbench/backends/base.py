@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+import numpy as np
+
 from llmbench.metrics import GenerationTiming
 
 
@@ -37,6 +39,13 @@ class Backend(ABC):
     def generate(
         self, prompt_tokens: list[int], max_new_tokens: int, ignore_eos: bool = True
     ) -> GenerationResult: ...
+
+    def logits(self, tokens: list[int]) -> np.ndarray:
+        """Raw logits at every position of `tokens`, shape (len(tokens), vocab).
+
+        Row i is the prediction for token i+1. Used by quality metrics, not by timing.
+        """
+        raise NotImplementedError(f"{self.name} does not expose per-position logits")
 
     def close(self) -> None:
         pass

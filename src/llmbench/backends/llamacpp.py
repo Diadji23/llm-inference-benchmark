@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import numpy as np
+
 from llmbench.backends.base import Backend, GenerationResult
 from llmbench.metrics import GenerationTiming
 
@@ -19,12 +21,15 @@ class LlamaCppBackend(Backend):
         n_threads: int | None = None,
         n_batch: int = 512,
         seed: int = 0,
+        logits_all: bool = False,
     ):
         self.model_path = Path(model_path)
         self.n_ctx = n_ctx
         self.n_threads = n_threads
         self.n_batch = n_batch
         self.seed = seed
+        # Keeps logits for every position (n_ctx x vocab floats): only for quality runs.
+        self.logits_all = logits_all
         self._llm = None
 
     def load(self) -> None:
@@ -40,6 +45,7 @@ class LlamaCppBackend(Backend):
             n_threads=self.n_threads,
             n_batch=self.n_batch,
             seed=self.seed,
+            logits_all=self.logits_all,
             verbose=False,
         )
 
@@ -81,6 +87,15 @@ class LlamaCppBackend(Backend):
             n_generated_tokens=len(out),
         )
         return GenerationResult(timing=timing, text=self.detokenize(out))
+
+    def logits(self, tokens: list[int]) -> np.ndarray:
+        if not self.logits_all:
+            raise RuntimeError("load the backend with logits_all=True to get logits")
+        if len(tokens) > self.n_ctx:
+            raise ValueError("tokens exceed n_ctx")
+        self._llm.reset()
+        self._llm.eval(tokens)
+        return np.array(self._llm.scores[: len(tokens)])
 
     def close(self) -> None:
         if self._llm is not None:
