@@ -1,0 +1,40 @@
+# Step 1 — baseline: TTFT, latency, throughput and memory of three small models.
+#
+# Hypothesis: on CPU, decoding is bound by memory bandwidth, so decode throughput should be
+# roughly inversely proportional to weight size, while prefill (compute-bound) should grow
+# less than linearly with prompt length thanks to batched processing.
+#
+# All models in Q4_K_M to isolate the effect of size; quantization is the subject of step 2.
+experiment: 01_baseline
+backend: llamacpp
+backend_args:
+  n_ctx: 2048
+  n_threads: 4      # = physical cores; hyperthreading does not help a memory-bound workload
+  n_batch: 512
+  seed: 0
+
+models:
+  - name: qwen2.5-0.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+    path: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  - name: llama-3.2-1b
+    quant: Q4_K_M
+    repo: bartowski/Llama-3.2-1B-Instruct-GGUF
+    path: models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+  - name: qwen2.5-1.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF
+    path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+
+prompts:
+  source: data/prompts/source_en.txt
+  lengths: [32, 128, 512]   # in tokens, truncated with each model's own tokenizer
+
+generation:
+  max_new_tokens: 128
+  ignore_eos: true          # fixed output length: otherwise throughput depends on content
+
+warmup: 2                 # short (16-token) generations after each load, not measured
+repetitions: 5            # interleaved rounds: each visits every model once, shuffled order
+schedule_seed: 0

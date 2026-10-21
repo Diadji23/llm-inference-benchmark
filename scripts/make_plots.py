@@ -27,8 +27,9 @@ plt.rcParams.update({
 
 
 def _err(df: pd.DataFrame, metric: str):
-    mean = df[f"{metric}_mean"]
-    return mean, [mean - df[f"{metric}_ci95_low"], df[f"{metric}_ci95_high"] - mean]
+    """Median and its interquartile range, as asymmetric error bars."""
+    med = df[f"{metric}_median"]
+    return med, [med - df[f"{metric}_q25"], df[f"{metric}_q75"] - med]
 
 
 def plot_baseline(summary: pd.DataFrame, models: list[str], out: Path) -> None:
@@ -39,17 +40,17 @@ def plot_baseline(summary: pd.DataFrame, models: list[str], out: Path) -> None:
     ax = axes[0]
     for m in models:
         g = summary[summary["model"] == m].sort_values("prompt_len")
-        mean, err = _err(g, "ttft_s")
-        ax.errorbar(g["prompt_len"], mean, yerr=err, color=colors[m], lw=2, marker="o", ms=6,
+        med, err = _err(g, "ttft_s")
+        ax.errorbar(g["prompt_len"], med, yerr=err, color=colors[m], lw=2, marker="o", ms=6,
                     capsize=3, label=m)
-        ax.annotate(m, (g["prompt_len"].iloc[-1], mean.iloc[-1]), xytext=(6, 0),
+        ax.annotate(m, (g["prompt_len"].iloc[-1], med.iloc[-1]), xytext=(6, 0),
                     textcoords="offset points", va="center", color=INK_2, fontsize=8)
     ax.set_xscale("log", base=2)
     ax.set_xticks(sorted(summary["prompt_len"].unique()))
     ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
     ax.set_xlabel("prompt (tokens)")
     ax.set_ylabel("TTFT (s)")
-    ax.set_title("Time to first token")
+    ax.set_title("Time to first token (median, IQR)")
     ax.margins(x=0.25)
 
     # 2. Decode throughput at the median prompt length: memory-bound.
@@ -57,11 +58,11 @@ def plot_baseline(summary: pd.DataFrame, models: list[str], out: Path) -> None:
     mid_len = sorted(summary["prompt_len"].unique())[len(summary["prompt_len"].unique()) // 2]
     mid = summary[summary["prompt_len"] == mid_len].set_index("model").reindex(models)
     per_model = pd.DataFrame({
-        "decode": mid["decode_tps_mean"], "decode_lo": mid["decode_tps_ci95_low"],
-        "decode_hi": mid["decode_tps_ci95_high"],
-        "rss": summary.groupby("model")["net_peak_rss_mib_mean"].max().reindex(models),
+        "decode": mid["decode_tps_median"], "decode_lo": mid["decode_tps_q25"],
+        "decode_hi": mid["decode_tps_q75"],
+        "rss": summary.groupby("model")["net_peak_rss_mib_median"].max().reindex(models),
     })
-    panels = ((axes[1], "decode", f"Decode throughput (prompt {mid_len})", "tokens/s"),
+    panels = ((axes[1], "decode", f"Decode throughput (prompt {mid_len}, median)", "tokens/s"),
               (axes[2], "rss", "Peak memory (RSS above baseline)", "MiB"))
     for ax, col, title, unit in panels:
         vals = per_model[col]

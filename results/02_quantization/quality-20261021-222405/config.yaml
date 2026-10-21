@@ -1,0 +1,63 @@
+# Step 2 — weight quantization: F16 vs Q8_0 vs Q4_K_M, speed and quality.
+#
+# Hypotheses:
+#   1. Decode is memory-bound (step 1), so decode throughput should follow file size:
+#      ~1.9x for Q8_0 and ~3x for Q4_K_M relative to F16.
+#   2. Prefill is compute-bound, so the gain should be much smaller; Q4_K_M may even be
+#      slower than Q8_0 because 4-bit weights must be unpacked before computing.
+#   3. Q8_0 should be nearly indistinguishable from F16; Q4_K_M should lose a little,
+#      more so for the smallest model.
+#
+# Same family = same `name`; only `quant` changes, so each variant is compared to the F16
+# of its own family (perplexity is only comparable within one tokenizer).
+experiment: 02_quantization
+backend: llamacpp
+backend_args:
+  n_ctx: 2048
+  n_threads: 4
+  n_batch: 512
+  seed: 0
+
+models:
+  - {name: qwen2.5-0.5b, quant: F16, repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF,
+     path: models/qwen2.5-0.5b-instruct-fp16.gguf}
+  - {name: qwen2.5-0.5b, quant: Q8_0, repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF,
+     path: models/qwen2.5-0.5b-instruct-q8_0.gguf}
+  - {name: qwen2.5-0.5b, quant: Q4_K_M, repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF,
+     path: models/qwen2.5-0.5b-instruct-q4_k_m.gguf}
+  - {name: llama-3.2-1b, quant: F16, repo: bartowski/Llama-3.2-1B-Instruct-GGUF,
+     path: models/Llama-3.2-1B-Instruct-f16.gguf}
+  - {name: llama-3.2-1b, quant: Q8_0, repo: bartowski/Llama-3.2-1B-Instruct-GGUF,
+     path: models/Llama-3.2-1B-Instruct-Q8_0.gguf}
+  - {name: llama-3.2-1b, quant: Q4_K_M, repo: bartowski/Llama-3.2-1B-Instruct-GGUF,
+     path: models/Llama-3.2-1B-Instruct-Q4_K_M.gguf}
+  - {name: qwen2.5-1.5b, quant: F16, repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF,
+     path: models/qwen2.5-1.5b-instruct-fp16.gguf}
+  - {name: qwen2.5-1.5b, quant: Q8_0, repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF,
+     path: models/qwen2.5-1.5b-instruct-q8_0.gguf}
+  - {name: qwen2.5-1.5b, quant: Q4_K_M, repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF,
+     path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf}
+
+prompts:
+  source: data/prompts/source_en.txt
+  lengths: [128, 512]       # 32 tokens added little information in step 1
+
+generation:
+  max_new_tokens: 128
+  ignore_eos: true
+
+warmup: 2
+repetitions: 5
+
+# Quality (scripts/run_quality.py). Each family's reference variant runs first; the
+# others are compared to it on the same tokens and the same questions.
+quality:
+  reference: F16
+  n_ctx: 1024               # longest MMLU prompt in the sample is 498 tokens: keeps margin
+  perplexity:
+    source: data/eval/wikitext2_test_extract.txt
+    window: 512             # score the second half of each window (llama.cpp convention)
+    n_windows: 16           # 16 x 256 = 4,096 scored tokens
+    top_k: 20               # reference top-k kept for the coarse KL
+  mcq:
+    source: data/eval/mmlu_200.jsonl
