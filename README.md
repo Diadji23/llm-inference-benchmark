@@ -119,6 +119,17 @@ model in one block, without canary. It found slower 1B and 1.5B models (19.0 and
 throughput rising with prompt length (0.5B: 51 → 131 tok/s). Neither reproduces under the
 interleaved protocol; both conclusions were withdrawn.
 
+**Side observations (outside the protocol, worth keeping in mind).**
+- *Power.* On battery (Windows "Balanced" plan), Qwen-0.5B dropped to 75 tok/s prefill and
+  24 tok/s decode with ~40% TTFT variability, versus 138 and 41 tok/s (~3%) on AC power.
+  All runs are therefore done on AC power.
+- *Threads.* 8 threads (SMT) gave ~12 tok/s decode versus ~24 with 4 threads (measured on
+  battery): the extra threads compete for the same memory bandwidth. All runs use 4
+  threads, one per physical core.
+- *Memory measurement.* Baseline RSS grows from one model to the next (78 → 187 MiB in the
+  first run, memory not returned to the OS after unloading), so peak memory is reported
+  net of the RSS measured just before each load.
+
 ### 2. Weight quantization
 
 **Hypotheses.**
