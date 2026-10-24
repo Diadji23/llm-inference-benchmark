@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import ctypes
 import time
 from pathlib import Path
 
 import numpy as np
 
 from llmbench.backends.base import Backend, GenerationResult
+from llmbench.memory import parse_llamacpp_buffers
 from llmbench.metrics import GenerationTiming
+
+KV_TYPES = ("f16", "q8_0", "q4_0")
 
 
 class LlamaCppBackend(Backend):
@@ -22,6 +26,9 @@ class LlamaCppBackend(Backend):
         n_batch: int = 512,
         seed: int = 0,
         logits_all: bool = False,
+        flash_attn: bool = False,
+        type_k: str = "f16",
+        type_v: str = "f16",
     ):
         self.model_path = Path(model_path)
         self.n_ctx = n_ctx
@@ -30,24 +37,57 @@ class LlamaCppBackend(Backend):
         self.seed = seed
         # Keeps logits for every position (n_ctx x vocab floats): only for quality runs.
         self.logits_all = logits_all
+        # False is the llama-cpp-python default, used in steps 1-2.
+        self.flash_attn = flash_attn
+        for kv_type in (type_k, type_v):
+            if kv_type not in KV_TYPES:
+                raise ValueError(f"KV cache type {kv_type!r} not in {KV_TYPES}")
+        # llama.cpp only quantizes V inside the flash attention kernel.
+        if type_v != "f16" and not flash_attn:
+            raise ValueError("a quantized V cache requires flash_attn=True")
+        self.type_k, self.type_v = type_k, type_v
+        self.buffers: dict[str, float] = {}
+        self.metadata: dict[str, str] = {}
         self._llm = None
 
     def load(self) -> None:
+        import llama_cpp
         from llama_cpp import Llama
 
         if not self.model_path.exists():
             raise FileNotFoundError(
                 f"{self.model_path} not found: run scripts/download_models.py"
             )
-        self._llm = Llama(
-            model_path=str(self.model_path),
-            n_ctx=self.n_ctx,
-            n_threads=self.n_threads,
-            n_batch=self.n_batch,
-            seed=self.seed,
-            logits_all=self.logits_all,
-            verbose=False,
-        )
+        ggml_type = {"f16": llama_cpp.GGML_TYPE_F16, "q8_0": llama_cpp.GGML_TYPE_Q8_0,
+                     "q4_0": llama_cpp.GGML_TYPE_Q4_0}
+        # The buffer sizes llama.cpp reserves are only printed in its log: capture it
+        # during the load, then give the log back to llama-cpp-python's own handler.
+        log: list[str] = []
+
+        @llama_cpp.llama_log_callback
+        def capture(level, text, user_data):
+            log.append(text.decode("utf-8", errors="replace"))
+
+        llama_cpp.llama_log_set(capture, ctypes.c_void_p(0))
+        try:
+            self._llm = Llama(
+                model_path=str(self.model_path),
+                n_ctx=self.n_ctx,
+                n_threads=self.n_threads,
+                n_batch=self.n_batch,
+                seed=self.seed,
+                logits_all=self.logits_all,
+                flash_attn=self.flash_attn,
+                type_k=ggml_type[self.type_k],
+                type_v=ggml_type[self.type_v],
+                verbose=False,
+            )
+        finally:
+            from llama_cpp._logger import llama_log_callback
+
+            llama_cpp.llama_log_set(llama_log_callback, ctypes.c_void_p(0))
+        self.buffers = parse_llamacpp_buffers("".join(log))
+        self.metadata = dict(self._llm.metadata)
 
     def tokenize(self, text: str, add_bos: bool = True) -> list[int]:
         return self._llm.tokenize(text.encode("utf-8"), add_bos=add_bos)
