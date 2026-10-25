@@ -1,0 +1,52 @@
+# Step 3a — KV cache: how speed and memory evolve with the context length.
+#
+# Hypotheses:
+#   1. Decode slows down as the context grows: each token reads the weights *and* the KV
+#      cache, so time per token ~ (weights + KV cache) / bandwidth. Llama-3.2-1B at 16k
+#      tokens: 770 MiB of weights + 512 MiB of cache, about 40% slower than a short context.
+#   2. TTFT grows faster than linearly at long contexts: attention compares every token
+#      with all the previous ones (quadratic cost), on top of the linear cost of the weights.
+#   3. The KV cache does not explain the memory overhead seen in step 1: at 2k tokens it
+#      weighs 24-64 MiB, against up to 720 MiB beyond the file size.
+#
+# Same three Q4_K_M models as step 1, so only the context length changes. Flash attention is
+# on, as in step 3c where it is required to quantize the V cache: the F16 runs here are the
+# reference for step 3c. Steps 1-2 ran without it, so their numbers are not directly
+# comparable.
+experiment: 03_kv_context
+backend: llamacpp
+backend_args:
+  n_threads: 4
+  n_batch: 512
+  seed: 0
+  flash_attn: true
+
+models:
+  - name: qwen2.5-0.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+    path: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  - name: llama-3.2-1b
+    quant: Q4_K_M
+    repo: bartowski/Llama-3.2-1B-Instruct-GGUF
+    path: models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+  - name: qwen2.5-1.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF
+    path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+
+kv_cache: [f16]
+
+prompts:
+  source: data/prompts/wikitext2_valid_extract.txt
+  lengths: [512, 2048, 8192, 16384]
+  ctx_per_prompt: true      # one load per length, n_ctx = prompt + generation
+
+generation:
+  max_new_tokens: 128
+  ignore_eos: true
+
+warmup: 2                 # short (16-token) generations after each load, not measured
+warmup_prompt_len: 32     # otherwise each warmup would redo a full long prefill
+repetitions: 5            # interleaved rounds: each visits every (model, length) once
+schedule_seed: 0
