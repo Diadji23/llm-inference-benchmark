@@ -1,0 +1,46 @@
+# Step 3c — quantized KV cache: F16 vs Q8_0 vs Q4_0, at a short and a long context.
+#
+# Hypothesis: quantizing the cache shrinks its memory in proportion to its bits (Q8_0:
+# 34/64 of F16, Q4_0: 18/64) and speeds decode up at long contexts, where the cache is a
+# large share of the bytes read per token. At 2k tokens the cache is small, so little should
+# change. Q8_0 should be nearly lossless, Q4_0 a little less.
+#
+# Same models and protocol as step 3a. Flash attention is on for every variant, F16
+# included: llama.cpp requires it to quantize V, and only the cache type must change.
+experiment: 03_kv_quant
+backend: llamacpp
+backend_args:
+  n_threads: 4
+  n_batch: 512
+  seed: 0
+  flash_attn: true
+
+models:
+  - name: qwen2.5-0.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+    path: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  - name: llama-3.2-1b
+    quant: Q4_K_M
+    repo: bartowski/Llama-3.2-1B-Instruct-GGUF
+    path: models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+  - name: qwen2.5-1.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF
+    path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+
+kv_cache: [f16, q8_0, q4_0]   # each value sets both the K and the V cache type
+
+prompts:
+  source: data/prompts/wikitext2_valid_extract.txt
+  lengths: [2048, 16384]
+  ctx_per_prompt: true      # one load per length, n_ctx = prompt + generation
+
+generation:
+  max_new_tokens: 128
+  ignore_eos: true
+
+warmup: 2                 # short (16-token) generations after each load, not measured
+warmup_prompt_len: 32     # otherwise each warmup would redo a full long prefill
+repetitions: 5            # interleaved rounds: each visits every (model, KV type, length) once
+schedule_seed: 0
