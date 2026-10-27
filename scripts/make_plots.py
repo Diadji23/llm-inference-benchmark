@@ -152,6 +152,50 @@ def plot_quantization(summary: pd.DataFrame, quality: pd.DataFrame, models: list
     print(f"-> {out}")
 
 
+def plot_context(summary: pd.DataFrame, models: list[str], out: Path) -> None:
+    """Step 3a: TTFT, decode time per token and memory against the context length."""
+    colors = {m: SERIES[i] for i, m in enumerate(models)}
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), layout="constrained")
+    lengths = sorted(summary["prompt_len"].unique())
+    for m in models:
+        g = summary[summary["model"] == m].sort_values("prompt_len")
+        med, err = _err(g, "ttft_s")
+        axes[0].errorbar(g["prompt_len"], med, yerr=err, color=colors[m], lw=2, marker="o",
+                         ms=6, capsize=3, label=m)
+        # Time per token adds up linearly, unlike tokens/s: it shows the per-context cost.
+        ms_per_token = 1e3 / g["decode_tps_median"]
+        axes[1].plot(g["prompt_len"], ms_per_token, color=colors[m], lw=2, marker="o", ms=6)
+        axes[1].annotate(f"{ms_per_token.iloc[-1]:.0f}", (g["prompt_len"].iloc[-1], ms_per_token.iloc[-1]),
+                         xytext=(6, 0), textcoords="offset points", va="center", color=INK_2,
+                         fontsize=8)
+        axes[2].plot(g["prompt_len"], g["net_peak_rss_mib_median"], color=colors[m], lw=2,
+                     marker="o", ms=6)
+        axes[2].plot(g["prompt_len"], g["kv_cache_mib"], color=colors[m], lw=1.5, ls="--",
+                     marker="o", ms=4)
+    axes[0].set_xscale("log", base=2)
+    axes[0].set_yscale("log")
+    axes[0].set_ylabel("TTFT (s, log)")
+    axes[0].set_title("Time to first token (median, IQR)")
+    axes[1].set_ylim(bottom=0)
+    axes[1].set_ylabel("ms per generated token")
+    axes[1].set_title("Decode time per token (median)")
+    axes[2].set_ylim(bottom=0)
+    axes[2].set_ylabel("MiB")
+    axes[2].set_title("Net peak RSS (solid), KV cache (dashed)", fontsize=10)
+    for ax in axes:
+        # Log axis: one tick per measured length. Linear axes: evenly spaced ticks, since
+        # 512 and 2,048 would overlap.
+        ax.set_xticks(lengths if ax is axes[0] else range(0, max(lengths) + 1, 4096))
+        ax.get_xaxis().set_major_formatter(plt.ScalarFormatter())
+        ax.set_xlabel("context (prompt tokens)")
+    axes[1].margins(x=0.1)
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center",
+               ncol=len(models), frameon=False)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150)
+    print(f"-> {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dir", type=Path)
@@ -166,6 +210,8 @@ def main() -> None:
     out = args.out / f"{experiment}.png"
     if args.quality:
         plot_quantization(summary, pd.read_csv(args.quality / "quality.csv"), models, out)
+    elif experiment == "03_kv_context":
+        plot_context(summary, models, out)
     else:
         plot_baseline(summary, models, out)
 

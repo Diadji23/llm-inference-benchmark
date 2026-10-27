@@ -66,7 +66,7 @@ Lessons from the first runs are built into the runner:
 
 1. **Baseline**: TTFT, latency, throughput and memory of 3 small models — [results](#1-baseline)
 2. **Weight quantization**: F16, Q8_0, Q4_K_M (speed, memory, perplexity, MMLU) — [results](#2-weight-quantization)
-3. **KV cache**: effect of context length, quantized KV cache — *upcoming*
+3. **KV cache**: effect of context length, flash attention, quantized KV cache — [results so far](#3-kv-cache) (3a done; 3b, 3c upcoming)
 4. **Speculative decoding**: speedup and acceptance rate — *upcoming*
 
 ### 1. Baseline
@@ -207,7 +207,13 @@ Runs: [speed](results/02_quantization/20261022-003157/),
   and Q4_K_M is the fastest format for the 1B and 1.5B models (+22% and +28% vs F16) while
   the slowest for the 0.5B. A plausible but unverified cause is kernel support: llama.cpp
   repacks Q4_K weights into an AVX2-friendly layout at load time, which it does not do for
-  Q8_0. This could be tested by disabling repacking.
+  Q8_0. This could be tested by disabling repacking. A likely reason why the 0.5B behaves
+  differently: its "Q4_K_M" file is only 8% Q4_K. K-quants work on super-blocks of 256
+  weights along a row, and its rows of 896 weights (3.5 × 256) cannot be split into them, so
+  llama.cpp falls back to Q5_0 for 62% of the weights (Q8_0 for 22%, Q6_K for 8%). The
+  Q4_K repack then barely applies (+28 MiB, against +446 MiB for the 1B), and Q5_0 is costly
+  to unpack, which would also explain why its Q4_K_M decodes no faster than its Q8_0. The
+  1B and 1.5B files are 67–76% Q4_K and 24–33% Q6_K. Not yet tested.
 - *Hypothesis 3, quality: confirmed for Q8_0, partly refuted for Q4_K_M.* Q8_0 is close to
   F16 (perplexity +0.1%, except +0.8% for the 0.5B; ~98% top-1 agreement). Q4_K_M costs
   +3.8 to +5.0% perplexity and changes about 1 predicted token in 10, but the *largest*
@@ -223,6 +229,91 @@ Runs: [speed](results/02_quantization/20261022-003157/),
   for the 1B and 1.5B models (−3% and −8%) despite files 39–41% smaller. RSS reflects which
   mapped pages are actually touched and the buffers llama.cpp allocates, not just the file;
   step 3 will break this down.
+
+### 3. KV cache
+
+During decode, each new token attends to every previous one. Their keys and values (K, V)
+are kept in the **KV cache** instead of being recomputed, so its size grows linearly with the
+context: 2 (K and V) × layers × KV heads × head size × 2 bytes (F16) per token. llama.cpp
+allocates it for the whole `n_ctx` at load time, so each prompt length is measured with its
+own load, with `n_ctx` = prompt + generated tokens. Flash attention is on in step 3, because
+quantizing the V cache (step 3c) requires it.
+
+#### 3a. Context length
+
+**Hypotheses.**
+1. Each decoded token reads the weights *and* the KV cache, so the time per token should
+   follow (weights + cache) / bandwidth. For Llama-3.2-1B at 16k tokens: 770 MiB of weights
+   plus 520 MiB of cache, about 40% slower than a short context.
+2. TTFT grows faster than linearly at long contexts: attention compares every prompt token
+   with all the previous ones (quadratic cost), on top of the linear cost of the weights.
+3. The KV cache does not explain the memory overhead seen in step 1: at 2k tokens it weighs
+   27–72 MiB, against up to 720 MiB beyond the file size.
+
+**Protocol.** [`configs/03_kv_context.yaml`](configs/03_kv_context.yaml) — the three models
+of step 1 in Q4_K_M, F16 cache, flash attention on; prompts of 512, 2,048, 8,192 and 16,384
+tokens cut from a frozen WikiText-2 extract; 128 generated tokens; 5 interleaved rounds
+(60 measurements, 1 h 58, canary 2.5–3.6 ms).
+
+```bash
+python scripts/run_experiment.py configs/03_kv_context.yaml
+python scripts/make_plots.py results/03_kv_context/<run_id>
+```
+
+![KV cache: TTFT, decode time per token, memory vs context length](figures/03_kv_context.png)
+
+| Model (Q4_K_M) | Context | TTFT | Prefill | Decode | ms / token | KV cache | Net peak RSS |
+|---|---|---|---|---|---|---|---|
+| Qwen2.5-0.5B | 512 | 3.1 s | 165 tok/s | 41.8 tok/s | 24 | 9 MiB | 497 MiB |
+| | 2,048 | 13.2 s | 156 tok/s | 32.6 tok/s | 31 | 27 MiB | 513 MiB |
+| | 8,192 | 72.9 s | 112 tok/s | 16.1 tok/s | 62 | 99 MiB | 604 MiB |
+| | 16,384 | 196 s | 84 tok/s | 8.1 tok/s | 123 | 195 MiB | 708 MiB |
+| Llama-3.2-1B | 512 | 4.0 s | 128 tok/s | 25.3 tok/s | 40 | 24 MiB | 1,269 MiB |
+| | 2,048 | 17.2 s | 119 tok/s | 17.7 tok/s | 56 | 72 MiB | 1,342 MiB |
+| | 8,192 | 101 s | 81 tok/s | 3.7 tok/s | 267 | 264 MiB | 1,540 MiB |
+| | 16,384 | 284 s | 58 tok/s | 2.0 tok/s | 493 | 520 MiB | 1,804 MiB |
+| Qwen2.5-1.5B | 512 | 5.8 s | 89 tok/s | 21.8 tok/s | 46 | 21 MiB | 1,718 MiB |
+| | 2,048 | 23.8 s | 86 tok/s | 17.5 tok/s | 57 | 63 MiB | 1,783 MiB |
+| | 8,192 | 129 s | 64 tok/s | 6.8 tok/s | 147 | 231 MiB | 1,957 MiB |
+| | 16,384 | 346 s | 47 tok/s | 3.5 tok/s | 289 | 455 MiB | 2,189 MiB |
+
+Medians over 5 rounds. ms / token = 1000 / decode throughput: unlike tokens/s, it adds up.
+KV cache = size reserved by llama.cpp, which matches the formula above exactly.
+Run: [`results/03_kv_context/20261025-064956/`](results/03_kv_context/20261025-064956/).
+
+**Conclusions.**
+- *Hypothesis 1, decode: refuted.* From 512 to 16k tokens, Llama-3.2-1B decodes 12× slower
+  (25.3 → 2.0 tok/s), not 1.7× as the bytes read predict; both Qwen models slow down 5–6×.
+  Beyond 2k tokens, the time per token grows about linearly with the context. Between 8k and
+  16k, each extra context token costs 7.5 µs (Qwen 0.5B), 27.6 µs (Llama 1B) and 17.4 µs
+  (Qwen 1.5B) per generated token, 13–19× more than reading its 12–32 KiB of cache at the
+  ~22 GB/s of step 1 would take. At long contexts, decode is no longer bound by memory
+  bandwidth but by the attention computation. Prime suspect, not yet verified: llama.cpp's
+  CPU flash attention kernel. Step 3b measures it on vs off.
+- *Hypothesis 2, TTFT: confirmed.* Prefill throughput roughly halves from 512 to 16k tokens
+  for all three models. Llama-3.2-1B gets 32× more tokens but takes 71× longer (4.0 s →
+  284 s). In practice, a 16k-token prompt means waiting about 5 minutes for the first token
+  on this machine.
+- *Hypothesis 3, memory: confirmed.* At 2k tokens the cache weighs 27–72 MiB, far from the
+  step 1 overhead. It does explain the growth with context: from 512 to 16k, net peak RSS
+  grows by 211 / 535 / 471 MiB and the cache by 186 / 496 / 434 MiB (Qwen 0.5B / Llama 1B /
+  Qwen 1.5B). The load log points to two other contributors to the fixed overhead: a compute
+  buffer of 259–303 MiB, reserved but not necessarily touched, and the Q4_K repack, which
+  keeps a second copy of part of the weights (+28 MiB for the 0.5B, +446 MiB for the 1B,
+  +597 MiB for the 1.5B). Not yet confirmed by disabling the repack.
+- *Not comparable with steps 1–2.* Those runs had flash attention off. At 512 tokens the
+  numbers are close (Llama decode 24.9 vs 25.3 tok/s), but a clean comparison needs an
+  interleaved run: that is step 3b.
+
+#### 3b. Flash attention on vs off — *upcoming*
+
+[`configs/03_flash_attn.yaml`](configs/03_flash_attn.yaml): same three models, F16 cache,
+flash attention on vs off at 2,048 and 8,192 tokens, in one interleaved run.
+
+#### 3c. Quantized KV cache — *upcoming*
+
+[`configs/03_kv_quant.yaml`](configs/03_kv_quant.yaml): F16, Q8_0 and Q4_0 caches at 2,048
+and 16,384 tokens.
 
 ## Key takeaways
 
