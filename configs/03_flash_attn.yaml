@@ -1,0 +1,54 @@
+# Step 3b — flash attention on vs off, to explain the decode collapse of step 3a.
+#
+# In step 3a (flash attention on), decode time per token grew by ~28 µs per context token
+# on Llama-3.2-1B: 25 tok/s at 512 tokens, 3.7 at 8,192. If decode only had to read the
+# weights and the KV cache, 8,192 tokens would add 256 MiB to the 770 MiB of weights, for
+# about 20 tok/s at the ~22 GB/s measured in step 1.
+#
+# Hypotheses:
+#   1. The CPU flash attention kernel is the bottleneck at long contexts: with it off, decode
+#      at 8k should be several times faster and get closer to the bandwidth prediction.
+#   2. At 2k, where the cache is small, both settings should decode at about the same speed.
+#   3. Without flash attention, llama.cpp materializes the attention scores, so its compute
+#      buffer should grow with the context.
+#
+# Same three Q4_K_M models and protocol as step 3a, F16 cache (a quantized V cache requires
+# flash attention). 8k rather than 16k: the collapse is already clear there, and the run
+# stays around an hour and a quarter.
+experiment: 03_flash_attn
+backend: llamacpp
+backend_args:
+  n_threads: 4
+  n_batch: 512
+  seed: 0
+
+models:
+  - name: qwen2.5-0.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+    path: models/qwen2.5-0.5b-instruct-q4_k_m.gguf
+  - name: llama-3.2-1b
+    quant: Q4_K_M
+    repo: bartowski/Llama-3.2-1B-Instruct-GGUF
+    path: models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+  - name: qwen2.5-1.5b
+    quant: Q4_K_M
+    repo: Qwen/Qwen2.5-1.5B-Instruct-GGUF
+    path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+
+kv_cache: [f16]
+flash_attn: [true, false]
+
+prompts:
+  source: data/prompts/wikitext2_valid_extract.txt
+  lengths: [2048, 8192]
+  ctx_per_prompt: true      # one load per length, n_ctx = prompt + generation
+
+generation:
+  max_new_tokens: 128
+  ignore_eos: true
+
+warmup: 2                 # short (16-token) generations after each load, not measured
+warmup_prompt_len: 32     # otherwise each warmup would redo a full long prefill
+repetitions: 5            # interleaved rounds: each visits every (model, FA, length) once
+schedule_seed: 0

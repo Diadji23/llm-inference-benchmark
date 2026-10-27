@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from llmbench.env import machine_canary_ms
 from llmbench.runner import measurement_units, schedule, summarize_run
 
@@ -46,6 +48,18 @@ def test_units_with_kv_cache_and_context_per_prompt():
     unit = next(u for u in units if u["model"]["name"] == "b" and u["kv_type"] == "q8_0"
                 and u["lengths"] == [2048])
     assert unit["backend_args"] == {"type_k": "q8_0", "type_v": "q8_0", "n_ctx": 2048 + 128}
+    assert unit["flash_attn"] is None
+
+
+def test_units_with_flash_attn_on_and_off():
+    units = measurement_units(_cfg(kv_cache=["f16"], flash_attn=[True, False]))
+    assert len(units) == 2 * 2  # models x flash attention settings
+    assert {u["backend_args"]["flash_attn"] for u in units} == {True, False}
+
+
+def test_units_reject_quantized_cache_without_flash_attn():
+    with pytest.raises(ValueError, match="requires flash attention"):
+        measurement_units(_cfg(kv_cache=["q8_0"], flash_attn=[False]))
 
 
 def _record(kv_type=None, **extra):
@@ -69,3 +83,12 @@ def test_summarize_run_splits_by_kv_type_and_reads_old_runs(tmp_path):
     raw.write_text(json.dumps(_record()))  # step 1-2 record: no KV type, no buffer sizes
     summary = summarize_run(raw)
     assert summary.kv_type.isna().all() and "kv_cache_mib" not in summary
+
+
+def test_summarize_run_splits_by_flash_attn(tmp_path):
+    raw = tmp_path / "raw.jsonl"
+    raw.write_text("\n".join(json.dumps(_record("f16", flash_attn=fa, decode_tps=tps))
+                             for fa, tps in [(True, 4.0), (True, 4.0), (False, 15.0)]))
+    summary = summarize_run(raw).set_index("flash_attn")
+    assert summary.loc[True, "decode_tps_median"] == 4.0
+    assert summary.loc[False, "decode_tps_median"] == 15.0
