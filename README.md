@@ -313,7 +313,7 @@ flash attention on vs off at 2,048 and 8,192 tokens, in one interleaved run.
 #### 3c. Quantized KV cache — *upcoming*
 
 [`configs/03_kv_quant.yaml`](configs/03_kv_quant.yaml): F16, Q8_0 and Q4_0 caches at 2,048
-and 16,384 tokens.
+and 8,192 tokens.
 
 ## Key takeaways
 

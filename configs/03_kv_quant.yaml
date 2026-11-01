@@ -7,6 +7,9 @@
 #
 # Same models and protocol as step 3a. Flash attention is on for every variant, F16
 # included: llama.cpp requires it to quantize V, and only the cache type must change.
+# 8k rather than 16k, 3 rounds rather than 5: 16k prefills alone would take about 4 hours,
+# while at 8k the cache is already a third of the weights' size on Llama-3.2-1B
+# (264 vs 770 MiB), and 8k matches step 3b. The run takes about 70 minutes.
 experiment: 03_kv_quant
 backend: llamacpp
 backend_args:
@@ -33,7 +36,7 @@ kv_cache: [f16, q8_0, q4_0]   # each value sets both the K and the V cache type
 
 prompts:
   source: data/prompts/wikitext2_valid_extract.txt
-  lengths: [2048, 16384]
+  lengths: [2048, 8192]
   ctx_per_prompt: true      # one load per length, n_ctx = prompt + generation
 
 generation:
@@ -42,5 +45,5 @@ generation:
 
 warmup: 2                 # short (16-token) generations after each load, not measured
 warmup_prompt_len: 32     # otherwise each warmup would redo a full long prefill
-repetitions: 5            # interleaved rounds: each visits every (model, KV type, length) once
+repetitions: 3            # interleaved rounds: each visits every (model, KV type, length) once
 schedule_seed: 0

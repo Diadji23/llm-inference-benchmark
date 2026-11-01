@@ -13,8 +13,9 @@
 #      buffer should grow with the context.
 #
 # Same three Q4_K_M models and protocol as step 3a, F16 cache (a quantized V cache requires
-# flash attention). 8k rather than 16k: the collapse is already clear there, and the run
-# stays around an hour and a quarter.
+# flash attention). 8k rather than 16k: the collapse is already clear there. 3 rounds
+# rather than 5: in step 3a the spread was 2-5% of the mean, far below the effect sought.
+# The run takes about 45 minutes.
 experiment: 03_flash_attn
 backend: llamacpp
 backend_args:
@@ -50,5 +51,5 @@ generation:
 
 warmup: 2                 # short (16-token) generations after each load, not measured
 warmup_prompt_len: 32     # otherwise each warmup would redo a full long prefill
-repetitions: 5            # interleaved rounds: each visits every (model, FA, length) once
+repetitions: 3            # interleaved rounds: each visits every (model, FA, length) once
 schedule_seed: 0
