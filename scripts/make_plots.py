@@ -289,6 +289,51 @@ def plot_kv_quant(summary: pd.DataFrame, models: list[str], out: Path) -> None:
     print(f"-> {out}")
 
 
+def plot_kv_hf(summary: pd.DataFrame, out: Path) -> None:
+    """Step 3d: time per generated token and total latency, with vs without the KV cache."""
+    fig, axes = plt.subplots(1, 2, figsize=(10, 3.8), layout="constrained")
+    lengths = sorted(summary["prompt_len"].unique())
+    n_gen = int(summary["n_generated"].iloc[0])
+    for uc, color, label in ((True, SERIES[0], "with KV cache"),
+                             (False, SERIES[1], "without KV cache")):
+        g = summary[summary["use_cache"] == uc].sort_values("prompt_len")
+        ms_per_token = 1e3 / g["decode_tps_median"]
+        axes[0].plot(g["prompt_len"], ms_per_token, color=color, lw=2, marker="o", ms=6,
+                     label=label)
+        axes[0].annotate(f"{ms_per_token.iloc[-1]:,.0f}",
+                         (g["prompt_len"].iloc[-1], ms_per_token.iloc[-1]), xytext=(6, 0),
+                         textcoords="offset points", va="center", color=INK_2, fontsize=8)
+        med, err = _err(g, "latency_s")
+        axes[1].errorbar(g["prompt_len"], med, yerr=err, color=color, lw=2, marker="o", ms=6,
+                         capsize=3)
+        axes[1].annotate(f"{med.iloc[-1]:.0f} s", (g["prompt_len"].iloc[-1], med.iloc[-1]),
+                         xytext=(6, 0), textcoords="offset points", va="center", color=INK_2,
+                         fontsize=8)
+    # Reference: one full prefill, what each step without the cache should cost.
+    g = summary[summary["use_cache"].astype(bool)].sort_values("prompt_len")
+    axes[0].plot(g["prompt_len"], 1e3 * g["ttft_s_median"], color=INK_2, lw=1.5, ls="--",
+                 label="TTFT (one full prefill)")
+    axes[0].set_yscale("log")
+    axes[0].set_ylabel("ms per generated token (log)")
+    axes[0].set_title("Decode time per token (median)")
+    axes[1].set_ylim(bottom=0)
+    axes[1].set_ylabel("s")
+    axes[1].set_title(f"Total time for {n_gen} tokens (median, IQR)")
+    # Log-log on the left: a slope of 1 means time per token proportional to the prompt.
+    # Linear on the right, where that proportionality should show as a straight line.
+    axes[0].set_xscale("log", base=2)
+    axes[0].get_xaxis().set_major_formatter(plt.ScalarFormatter())
+    for ax in axes:
+        ax.set_xticks(lengths)
+        ax.set_xlabel("prompt tokens")
+        ax.margins(x=0.12)
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="outside lower center", ncol=3,
+               frameon=False)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150)
+    print(f"-> {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dir", type=Path)
@@ -309,6 +354,8 @@ def main() -> None:
         plot_flash_attn(summary, models, out)
     elif experiment == "03_kv_quant":
         plot_kv_quant(summary, models, out)
+    elif experiment == "03_kv_hf":
+        plot_kv_hf(summary, out)
     else:
         plot_baseline(summary, models, out)
 

@@ -20,7 +20,7 @@ negative results are kept.
 configs/            one YAML config per experiment (models, prompts, repetitions, quality)
 src/llmbench/
   env.py            hardware/software snapshot + machine-state canary
-  backends/         common interface: llama.cpp (GGUF), Hugging Face to come
+  backends/         common interface: llama.cpp (GGUF), Hugging Face transformers (step 3d)
   metrics.py        TTFT, latency, throughput, aggregation (median, IQR, mean, CI)
   memory.py         peak memory (process RSS)
   quality.py        perplexity, agreement with a reference model, MMLU accuracy, McNemar test
@@ -66,7 +66,7 @@ Lessons from the first runs are built into the runner:
 
 1. **Baseline**: TTFT, latency, throughput and memory of 3 small models — [results](#1-baseline)
 2. **Weight quantization**: F16, Q8_0, Q4_K_M (speed, memory, perplexity, MMLU) — [results](#2-weight-quantization)
-3. **KV cache**: effect of context length, flash attention, quantized KV cache — [results](#3-kv-cache) (3a–3c done; 3d, generation with vs without cache on Hugging Face, upcoming)
+3. **KV cache**: effect of context length, flash attention, quantized KV cache, generation with vs without cache — [results](#3-kv-cache)
 4. **Speculative decoding**: speedup and acceptance rate — *upcoming*
 
 ### 1. Baseline
@@ -441,6 +441,74 @@ Medians over 3 rounds. Run:
   memory: it fits a longer context in the same RAM.
 - *Quality not measured.* Whether Q8_0 is lossless and how much Q4_0 degrades the output
   remains open (perplexity with a quantized cache).
+
+#### 3d. With vs without the KV cache
+
+llama.cpp cannot turn its cache off, Hugging Face `transformers` can. The HF backend
+([`src/llmbench/backends/hf.py`](src/llmbench/backends/hf.py)) runs a hand-written greedy
+loop: one forward pass per token, either the new token against the cache, or the whole
+sequence without it. Only the last position goes through the vocabulary projection, so
+turning the cache off only adds the recomputation of the transformer.
+
+**Hypotheses.** Without the cache, generating N tokens after a P-token prompt processes
+about N·P + N²/2 tokens instead of P + N.
+1. With the cache, decode time per token barely depends on P. Without it, each token costs
+   about one prefill of the whole sequence: time per token grows linearly with P, and the
+   gap reaches tens of times at P = 1,024.
+2. TTFT is the same either way: the first token comes from the prefill.
+3. The generated text is identical: the cache is an exact optimization.
+4. The cache itself is small here: 24 KiB per token in float32, about 25 MiB at 1,056
+   tokens.
+
+**Protocol.** [`configs/03_kv_hf.yaml`](configs/03_kv_hf.yaml) — Qwen2.5-0.5B-Instruct in
+float32 (this CPU has no AVX-512 BF16), 4 threads; prompts of 128, 256, 512 and 1,024
+tokens from the same WikiText-2 extract; 32 generated tokens (without the cache, one token
+at 1,024 takes ~9 s); 3 interleaved rounds (24 measurements, 30 min, canary 2.7–4.4 ms).
+
+```bash
+python scripts/download_models.py configs/03_kv_hf.yaml
+python scripts/run_experiment.py configs/03_kv_hf.yaml
+python scripts/make_plots.py results/03_kv_hf/<run_id>
+```
+
+![With vs without KV cache: time per token and total time](figures/03_kv_hf.png)
+
+| Prompt | Cache | TTFT | Decode | ms / token | Total, 32 tokens | Slowdown (decode / total) |
+|---|---|---|---|---|---|---|
+| 128 | on | 1.26 s | 4.97 tok/s | 201 | 7.5 s | |
+| | off | 1.32 s | 0.73 tok/s | 1,372 | 43.8 s | 6.8× / 5.8× |
+| 256 | on | 2.37 s | 4.91 tok/s | 204 | 8.7 s | |
+| | off | 2.26 s | 0.42 tok/s | 2,375 | 75.8 s | 11.7× / 8.7× |
+| 512 | on | 4.55 s | 4.87 tok/s | 205 | 10.8 s | |
+| | off | 4.42 s | 0.21 tok/s | 4,673 | 149.4 s | 22.7× / 13.8× |
+| 1,024 | on | 9.05 s | 4.81 tok/s | 208 | 15.6 s | |
+| | off | 9.03 s | 0.11 tok/s | 9,434 | 302.0 s | 45× / 19× |
+
+Medians over 3 rounds.
+Run: [`results/03_kv_hf/20261101-141821/`](results/03_kv_hf/20261101-141821/).
+
+**Conclusions.**
+- *Hypothesis 1, decode: confirmed.* With the cache, time per token stays at 201–208 ms from
+  128 to 1,024 tokens. Without it, it doubles every time the prompt doubles, and each step
+  costs 4–6% more than the TTFT of the same prompt: every new token is a full prefill of a
+  slightly longer sequence. At 1,024 tokens, decode is 45× slower and the 32 tokens take
+  5 minutes instead of 16 s.
+- *Hypothesis 2, TTFT: confirmed.* Within 5% at every length, in both directions.
+- *Hypothesis 3, same output: confirmed.* The generated text is identical with and without
+  the cache, for every prompt and every round (also checked on a tiny random model in
+  [`tests/test_hf_backend.py`](tests/test_hf_backend.py)).
+- *Hypothesis 4, memory: not measurable in this run.* Both settings run in the same process,
+  one after the other, and memory freed by the first load is not returned to the OS: net
+  peak RSS ranges from 833 to 2,296 MiB depending on which setting was loaded first in the
+  round, far more than the ~25 MiB the cache should weigh.
+- *Hugging Face vs llama.cpp.* With the cache, transformers decodes at 4.9 tok/s, which
+  means reading the 1.98 GB of float32 weights at about 9.7 GB/s, against about 33 GB/s
+  for llama.cpp with the same model in F16 (step 2). Its prefill (~113 tok/s at 512 tokens) is also about half of
+  llama.cpp's F16 prefill (210 tok/s). Different precisions and flash attention settings:
+  an order of magnitude, not a controlled comparison.
+- *Why the cache matters.* Without it, every generated token turns decode back into a
+  prefill. With it, decode reads the weights once per token plus a cache that grows
+  linearly, which is the regime measured in steps 1 to 3c.
 
 ## Key takeaways
 
