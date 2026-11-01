@@ -49,11 +49,11 @@ def model_label(model: dict) -> str:
 
 
 def measurement_units(cfg: dict) -> list[dict]:
-    """What one load measures: a model, a KV cache type, a flash attention setting, and the
-    prompt lengths to run.
+    """What one load measures: a model, a KV cache type, a flash attention setting, whether
+    the KV cache is used at all, and the prompt lengths to run.
 
     Without `kv_cache` in the config, the cache stays at the backend default (steps 1-2).
-    Without a `flash_attn` list, flash attention follows `backend_args`.
+    Without a `flash_attn` or `use_cache` list, they follow `backend_args`.
     With `ctx_per_prompt`, each prompt length gets its own load with n_ctx = prompt +
     generation: llama.cpp allocates the KV cache for n_ctx up front, so a context sized
     for the longest prompt would make memory look the same at every length.
@@ -67,14 +67,18 @@ def measurement_units(cfg: dict) -> list[dict]:
                 # Fail before the run starts rather than hours into it.
                 if kv not in (None, "f16") and fa is False:
                     raise ValueError(f"KV cache {kv} requires flash attention")
-                for group in ([[n] for n in lengths] if per_prompt else [lengths]):
-                    args = {} if kv is None else {"type_k": kv, "type_v": kv}
-                    if fa is not None:
-                        args["flash_attn"] = fa
-                    if per_prompt:
-                        args["n_ctx"] = group[0] + cfg["generation"]["max_new_tokens"]
-                    units.append({"model": model, "kv_type": kv, "flash_attn": fa,
-                                  "lengths": group, "backend_args": args})
+                for uc in cfg.get("use_cache", [None]):
+                    for group in ([[n] for n in lengths] if per_prompt else [lengths]):
+                        args = {} if kv is None else {"type_k": kv, "type_v": kv}
+                        if fa is not None:
+                            args["flash_attn"] = fa
+                        if uc is not None:
+                            args["use_cache"] = uc
+                        if per_prompt:
+                            args["n_ctx"] = group[0] + cfg["generation"]["max_new_tokens"]
+                        units.append({"model": model, "kv_type": kv, "flash_attn": fa,
+                                      "use_cache": uc, "lengths": group,
+                                      "backend_args": args})
     return units
 
 
@@ -84,6 +88,8 @@ def unit_label(unit: dict) -> str:
         label += f" KV {unit['kv_type']}"
     if unit["flash_attn"] is not None:
         label += f" FA {'on' if unit['flash_attn'] else 'off'}"
+    if unit.get("use_cache") is not None:
+        label += f" cache {'on' if unit['use_cache'] else 'off'}"
     if "n_ctx" in unit["backend_args"]:
         label += f" ctx {unit['backend_args']['n_ctx']}"
     return label
@@ -149,6 +155,7 @@ def _measure_once(unit: dict, rnd: int, cfg: dict, source_text: str, raw) -> Non
                 "quant": model.get("quant"),
                 "kv_type": unit["kv_type"],
                 "flash_attn": backend_args.get("flash_attn"),
+                "use_cache": backend_args.get("use_cache"),
                 "backend": backend.name,
                 "n_ctx": backend_args.get("n_ctx"),
                 "prompt_len": n_prompt,
@@ -181,15 +188,16 @@ def summarize_run(raw_path: Path) -> pd.DataFrame:
     # Baseline RSS grows from one model to the next (memory not returned to the OS after
     # close()): the net peak is the only figure comparable across models of one run.
     df["net_peak_rss_mib"] = df["peak_rss_mib"] - df["rss_before_load_mib"]
-    for col in ("kv_type", "flash_attn"):  # not recorded by earlier runs
+    for col in ("kv_type", "flash_attn", "use_cache"):  # not recorded by earlier runs
         if col not in df:
             df[col] = None
     buffers = [c for c in ("model_buffer_mib", "kv_cache_mib", "compute_buffer_mib") if c in df]
     rows = []
-    keys = ["model", "quant", "kv_type", "flash_attn", "prompt_len"]
-    for (model, quant, kv_type, flash_attn, n_prompt), g in df.groupby(keys, dropna=False):
+    keys = ["model", "quant", "kv_type", "flash_attn", "use_cache", "prompt_len"]
+    for (model, quant, kv_type, flash_attn, use_cache, n_prompt), g in df.groupby(
+            keys, dropna=False):
         row = {"model": model, "quant": quant, "kv_type": kv_type, "flash_attn": flash_attn,
-               "prompt_len": n_prompt,
+               "use_cache": use_cache, "prompt_len": n_prompt,
                "n_generated": int(g["n_generated_tokens"].median()),
                "load_s": g["load_s"].median(),
                # Reserved sizes are fixed for a given load configuration.

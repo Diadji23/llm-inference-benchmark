@@ -1,4 +1,5 @@
-"""Download the GGUF files referenced by a config into models/.
+"""Download the models referenced by a config into models/: one GGUF file, or a whole
+Hugging Face model directory (safetensors weights, config and tokenizer).
 
 Usage: python scripts/download_models.py configs/01_baseline.yaml
 """
@@ -6,7 +7,7 @@ Usage: python scripts/download_models.py configs/01_baseline.yaml
 import argparse
 from pathlib import Path
 
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 from llmbench.runner import load_config
 
@@ -21,8 +22,13 @@ def main() -> None:
         if path.exists():
             print(f"✓ {path}")
             continue
-        print(f"↓ {model['repo']}/{path.name}")
-        hf_hub_download(repo_id=model["repo"], filename=path.name, local_dir=path.parent)
+        if path.suffix == ".gguf":
+            print(f"↓ {model['repo']}/{path.name}")
+            hf_hub_download(repo_id=model["repo"], filename=path.name, local_dir=path.parent)
+        else:
+            print(f"↓ {model['repo']} -> {path}/")
+            snapshot_download(repo_id=model["repo"], local_dir=path,
+                              allow_patterns=["*.json", "*.safetensors", "*.txt"])
 
 
 if __name__ == "__main__":

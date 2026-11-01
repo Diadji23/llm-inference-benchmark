@@ -11,6 +11,10 @@ def make_backend(kind: str, **kwargs) -> Backend:
         from llmbench.backends.llamacpp import LlamaCppBackend
 
         return LlamaCppBackend(**kwargs)
+    if kind == "hf":
+        from llmbench.backends.hf import HFBackend
+
+        return HFBackend(**kwargs)
     raise ValueError(f"unknown backend: {kind!r}")
 
 

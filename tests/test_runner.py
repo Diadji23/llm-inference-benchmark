@@ -92,3 +92,18 @@ def test_summarize_run_splits_by_flash_attn(tmp_path):
     summary = summarize_run(raw).set_index("flash_attn")
     assert summary.loc[True, "decode_tps_median"] == 4.0
     assert summary.loc[False, "decode_tps_median"] == 15.0
+
+
+def test_units_with_cache_on_and_off():
+    units = measurement_units(_cfg(use_cache=[True, False]))
+    assert len(units) == 2 * 2  # models x cache settings
+    assert {u["backend_args"]["use_cache"] for u in units} == {True, False}
+    assert all("type_k" not in u["backend_args"] for u in units)
+
+
+def test_summarize_run_splits_by_use_cache(tmp_path):
+    raw = tmp_path / "raw.jsonl"
+    raw.write_text("\n".join(json.dumps(_record(use_cache=uc, decode_tps=tps))
+                             for uc, tps in [(True, 30.0), (False, 2.0)]))
+    summary = summarize_run(raw).set_index("use_cache")
+    assert summary.loc[False, "decode_tps_median"] == 2.0

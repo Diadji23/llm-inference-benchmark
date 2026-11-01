@@ -1,0 +1,46 @@
+# Step 3d — generation with vs without the KV cache (Hugging Face transformers, CPU).
+#
+# llama.cpp cannot turn its cache off; transformers can. Without the cache, every new token
+# recomputes the whole sequence: generating N tokens after a P-token prompt processes about
+# N·P + N²/2 tokens instead of P + N.
+#
+# Hypotheses:
+#   1. With the cache, decode time per token barely depends on P. Without it, each token
+#      costs about a prefill of P tokens: time per token grows linearly with P, and the gap
+#      reaches tens of times at P = 1,024.
+#   2. TTFT is the same either way: the first token comes from the prefill.
+#   3. The generated text is identical: the cache is an exact optimization (barring
+#      floating-point rounding).
+#   4. The cache's memory is negligible here: 24 KiB per token in float32 (24 layers × 2 KV
+#      heads × 64 dims × K and V × 4 bytes), about 25 MiB at 1,056 tokens.
+#
+# Qwen2.5-0.5B only, in float32 (no AVX-512 BF16 on this CPU): 2 GB of weights, no license.
+# 32 generated tokens: without the cache, one token at P = 1,024 takes ~16 s, so 64 tokens
+# would make a single measurement last about 17 minutes. About 40-60 minutes in total.
+experiment: 03_kv_hf
+backend: hf
+backend_args:
+  n_threads: 4
+  dtype: float32
+  seed: 0
+
+models:
+  - name: qwen2.5-0.5b
+    quant: F32
+    repo: Qwen/Qwen2.5-0.5B-Instruct
+    path: models/qwen2.5-0.5b-instruct-hf
+
+use_cache: [true, false]
+
+prompts:
+  source: data/prompts/wikitext2_valid_extract.txt
+  lengths: [128, 256, 512, 1024]
+
+generation:
+  max_new_tokens: 32
+  ignore_eos: true
+
+warmup: 2                 # short (16-token) generations after each load, not measured
+warmup_prompt_len: 32
+repetitions: 3            # interleaved rounds: each visits every cache setting once
+schedule_seed: 0
