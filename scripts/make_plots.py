@@ -196,6 +196,99 @@ def plot_context(summary: pd.DataFrame, models: list[str], out: Path) -> None:
     print(f"-> {out}")
 
 
+def plot_flash_attn(summary: pd.DataFrame, models: list[str], out: Path) -> None:
+    """Step 3b: TTFT, decode time per token and memory, flash attention on vs off."""
+    colors = {m: SERIES[i] for i, m in enumerate(models)}
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), layout="constrained")
+    lengths = sorted(summary["prompt_len"].unique())
+    for m in models:
+        for fa, ls in ((True, "-"), (False, "--")):
+            g = summary[(summary["model"] == m) & (summary["flash_attn"] == fa)]
+            g = g.sort_values("prompt_len")
+            label = m if fa else None
+            med, err = _err(g, "ttft_s")
+            axes[0].errorbar(g["prompt_len"], med, yerr=err, color=colors[m], lw=2, ls=ls,
+                             marker="o", ms=6, capsize=3, label=label)
+            ms_per_token = 1e3 / g["decode_tps_median"]
+            axes[1].plot(g["prompt_len"], ms_per_token, color=colors[m], lw=2, ls=ls,
+                         marker="o", ms=6)
+            if fa:  # the "off" lines end too close together to label
+                axes[1].annotate(f"{ms_per_token.iloc[-1]:.0f}",
+                                 (g["prompt_len"].iloc[-1], ms_per_token.iloc[-1]),
+                                 xytext=(6, 0), textcoords="offset points", va="center",
+                                 color=INK_2, fontsize=8)
+            axes[2].plot(g["prompt_len"], g["net_peak_rss_mib_median"], color=colors[m], lw=2,
+                         ls=ls, marker="o", ms=6)
+    axes[0].set_ylim(bottom=0)
+    axes[0].set_ylabel("TTFT (s)")
+    axes[0].set_title("Time to first token (median, IQR)")
+    axes[1].set_ylim(bottom=0)
+    axes[1].set_ylabel("ms per generated token")
+    axes[1].set_title("Decode time per token (median)")
+    axes[2].set_ylim(bottom=0)
+    axes[2].set_ylabel("MiB")
+    axes[2].set_title("Net peak RSS (median)")
+    for ax in axes:
+        ax.set_xticks(lengths)
+        ax.set_xlabel("context (prompt tokens)")
+        ax.margins(x=0.15)
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles += [plt.Line2D([], [], color=INK_2, lw=2, ls=ls) for ls in ("-", "--")]
+    labels += ["flash attention on", "flash attention off"]
+    fig.legend(handles, labels, loc="outside lower center", ncol=len(labels), frameon=False)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150)
+    print(f"-> {out}")
+
+
+KV_ORDER = ["f16", "q8_0", "q4_0"]
+
+
+def plot_kv_quant(summary: pd.DataFrame, models: list[str], out: Path) -> None:
+    """Step 3c: TTFT, decode time per token and cache size against the KV cache type."""
+    colors = {m: SERIES[i] for i, m in enumerate(models)}
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), layout="constrained")
+    lengths = sorted(summary["prompt_len"].unique())
+    x = range(len(KV_ORDER))
+    styles = {lengths[-1]: "-", lengths[0]: "--"}
+    for m in models:
+        for length, ls in styles.items():
+            g = summary[(summary["model"] == m) & (summary["prompt_len"] == length)]
+            g = g.set_index("kv_type").reindex(KV_ORDER)
+            label = m if ls == "-" else None
+            med, err = _err(g, "ttft_s")
+            axes[0].errorbar(x, med, yerr=err, color=colors[m], lw=2, ls=ls, marker="o", ms=6,
+                             capsize=3, label=label)
+            ms_per_token = 1e3 / g["decode_tps_median"]
+            axes[1].plot(x, ms_per_token, color=colors[m], lw=2, ls=ls, marker="o", ms=6)
+            if ls == "-":
+                axes[2].plot(x, g["kv_cache_mib"], color=colors[m], lw=2, marker="o", ms=6)
+                axes[2].annotate(f"{g['kv_cache_mib'].iloc[-1]:.0f}",
+                                 (len(KV_ORDER) - 1, g["kv_cache_mib"].iloc[-1]), xytext=(8, 0),
+                                 textcoords="offset points", va="center", color=INK_2,
+                                 fontsize=8)
+    axes[0].set_ylim(bottom=0)
+    axes[0].set_ylabel("TTFT (s)")
+    axes[0].set_title("Time to first token (median, IQR)")
+    axes[1].set_ylim(bottom=0)
+    axes[1].set_ylabel("ms per generated token")
+    axes[1].set_title("Decode time per token (median)")
+    axes[2].set_ylim(bottom=0)
+    axes[2].set_ylabel("MiB")
+    axes[2].set_title(f"KV cache at {lengths[-1]:,} tokens")
+    for ax in axes:
+        ax.set_xticks(list(x), [k.upper() for k in KV_ORDER])
+        ax.set_xlabel("KV cache type")
+        ax.margins(x=0.15)
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles += [plt.Line2D([], [], color=INK_2, lw=2, ls=ls) for ls in styles.values()]
+    labels += [f"{length:,} tokens" for length in styles]
+    fig.legend(handles, labels, loc="outside lower center", ncol=len(labels), frameon=False)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150)
+    print(f"-> {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dir", type=Path)
@@ -212,6 +305,10 @@ def main() -> None:
         plot_quantization(summary, pd.read_csv(args.quality / "quality.csv"), models, out)
     elif experiment == "03_kv_context":
         plot_context(summary, models, out)
+    elif experiment == "03_flash_attn":
+        plot_flash_attn(summary, models, out)
+    elif experiment == "03_kv_quant":
+        plot_kv_quant(summary, models, out)
     else:
         plot_baseline(summary, models, out)
 

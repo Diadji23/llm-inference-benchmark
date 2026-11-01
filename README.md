@@ -66,7 +66,7 @@ Lessons from the first runs are built into the runner:
 
 1. **Baseline**: TTFT, latency, throughput and memory of 3 small models — [results](#1-baseline)
 2. **Weight quantization**: F16, Q8_0, Q4_K_M (speed, memory, perplexity, MMLU) — [results](#2-weight-quantization)
-3. **KV cache**: effect of context length, flash attention, quantized KV cache — [results so far](#3-kv-cache) (3a done; 3b, 3c upcoming)
+3. **KV cache**: effect of context length, flash attention, quantized KV cache — [results](#3-kv-cache) (3a–3c done; 3d, generation with vs without cache on Hugging Face, upcoming)
 4. **Speculative decoding**: speedup and acceptance rate — *upcoming*
 
 ### 1. Baseline
@@ -236,8 +236,8 @@ During decode, each new token attends to every previous one. Their keys and valu
 are kept in the **KV cache** instead of being recomputed, so its size grows linearly with the
 context: 2 (K and V) × layers × KV heads × head size × 2 bytes (F16) per token. llama.cpp
 allocates it for the whole `n_ctx` at load time, so each prompt length is measured with its
-own load, with `n_ctx` = prompt + generated tokens. Flash attention is on in step 3, because
-quantizing the V cache (step 3c) requires it.
+own load, with `n_ctx` = prompt + generated tokens. Flash attention is on in steps 3a and 3c,
+because quantizing the V cache (step 3c) requires it; step 3b measures what it costs.
 
 #### 3a. Context length
 
@@ -289,7 +289,7 @@ Run: [`results/03_kv_context/20261025-064956/`](results/03_kv_context/20261025-0
   (Qwen 1.5B) per generated token, 13–19× more than reading its 12–32 KiB of cache at the
   ~22 GB/s of step 1 would take. At long contexts, decode is no longer bound by memory
   bandwidth but by the attention computation. Prime suspect, not yet verified: llama.cpp's
-  CPU flash attention kernel. Step 3b measures it on vs off.
+  CPU flash attention kernel. Step 3b measures it on vs off (confirmed there).
 - *Hypothesis 2, TTFT: confirmed.* Prefill throughput roughly halves from 512 to 16k tokens
   for all three models. Llama-3.2-1B gets 32× more tokens but takes 71× longer (4.0 s →
   284 s). In practice, a 16k-token prompt means waiting about 5 minutes for the first token
@@ -305,15 +305,142 @@ Run: [`results/03_kv_context/20261025-064956/`](results/03_kv_context/20261025-0
   numbers are close (Llama decode 24.9 vs 25.3 tok/s), but a clean comparison needs an
   interleaved run: that is step 3b.
 
-#### 3b. Flash attention on vs off — *upcoming*
+#### 3b. Flash attention on vs off
 
-[`configs/03_flash_attn.yaml`](configs/03_flash_attn.yaml): same three models, F16 cache,
-flash attention on vs off at 2,048 and 8,192 tokens, in one interleaved run.
+**Hypotheses.**
+1. The CPU flash attention kernel is the decode bottleneck of step 3a: with it off, decode
+   at 8k should be several times faster and get closer to the bandwidth prediction.
+2. At 2k, where the cache is small, both settings should decode at about the same speed.
+3. Without flash attention, llama.cpp materializes the attention scores, so its compute
+   buffer should grow with the context.
 
-#### 3c. Quantized KV cache — *upcoming*
+**Protocol.** [`configs/03_flash_attn.yaml`](configs/03_flash_attn.yaml) — same three Q4_K_M
+models, F16 cache, flash attention on vs off, prompts of 2,048 and 8,192 tokens, 128
+generated tokens; 3 interleaved rounds, the spread of step 3a (2–5% of the mean) being far
+below the effect sought (36 measurements, 51 min, canary 2.5–3.5 ms).
 
-[`configs/03_kv_quant.yaml`](configs/03_kv_quant.yaml): F16, Q8_0 and Q4_0 caches at 2,048
-and 8,192 tokens.
+```bash
+python scripts/run_experiment.py configs/03_flash_attn.yaml
+python scripts/make_plots.py results/03_flash_attn/<run_id>
+```
+
+![Flash attention on vs off: TTFT, decode time per token, memory](figures/03_flash_attn.png)
+
+| Model (Q4_K_M) | Context | Flash attn | TTFT | Decode | ms / token | Compute buffer | Net peak RSS |
+|---|---|---|---|---|---|---|---|
+| Qwen2.5-0.5B | 2,048 | on | 16.2 s | 30.3 tok/s | 33 | 300 MiB | 499 MiB |
+| | | off | 17.2 s | 34.1 tok/s | 29 | 300 MiB | 586 MiB |
+| | 8,192 | on | 89.8 s | 13.5 tok/s | 74 | 300 MiB | 604 MiB |
+| | | off | 95.0 s | 21.1 tok/s | 47 | 302 MiB | 922 MiB |
+| Llama-3.2-1B | 2,048 | on | 21.6 s | 16.3 tok/s | 61 | 259 MiB | 1,342 MiB |
+| | | off | 24.5 s | 21.3 tok/s | 47 | 259 MiB | 1,494 MiB |
+| | 8,192 | on | 124.8 s | 3.8 tok/s | 263 | 259 MiB | 1,541 MiB |
+| | | off | 137.5 s | 12.2 tok/s | 82 | 567 MiB | 2,274 MiB |
+| Qwen2.5-1.5B | 2,048 | on | 30.3 s | 16.2 tok/s | 62 | 303 MiB | 1,783 MiB |
+| | | off | 30.5 s | 18.2 tok/s | 55 | 303 MiB | 1,785 MiB |
+| | 8,192 | on | 161.5 s | 6.5 tok/s | 154 | 303 MiB | 1,957 MiB |
+| | | off | 164.0 s | 11.7 tok/s | 85 | 306 MiB | 2,205 MiB |
+
+Medians over 3 rounds. Compute buffer = size reserved by llama.cpp at load time.
+Run: [`results/03_flash_attn/20261101-083445/`](results/03_flash_attn/20261101-083445/).
+
+**Conclusions.**
+- *Hypothesis 1, decode bottleneck: confirmed.* At 8k, turning flash attention off makes
+  decode 3.2× faster on Llama-3.2-1B (3.8 → 12.2 tok/s), 1.6× on Qwen 0.5B and 1.8× on
+  Qwen 1.5B. The cost of each extra context token drops from 33 to 5.7 µs per generated
+  token on Llama (6.7 → 2.9 µs on Qwen 0.5B, 15.0 → 5.0 µs on Qwen 1.5B), between 2,048 and
+  8,192 tokens. That is much closer to the bandwidth prediction (0.6–1.5 µs to read one
+  token of cache at ~22 GB/s), but still 4–5× above it: without flash attention, decode at
+  long contexts is still not purely bandwidth-bound.
+- *Hypothesis 2, same speed at 2k: refuted.* Flash attention off is already 12–31% faster at
+  2k. The CPU kernel costs something at every context length; the gap grows with it.
+- *Prefill.* Flash attention on is the faster setting here, but only by 1–12% on TTFT. On
+  this CPU it helps prefill a little and hurts decode a lot: at 8k, Llama with flash
+  attention off generates 128 tokens in 148 s end to end, against 158 s with it on.
+- *Hypothesis 3, compute buffer: confirmed for Llama only.* Without flash attention, its
+  reserved compute buffer grows from 259 to 567 MiB at 8k; Qwen's barely moves. Consistent
+  with the size of the attention score matrix for a 512-token batch (context × 512 × heads
+  × 4 bytes): 520 MiB for Llama's 32 heads at 8k, but only 195–228 MiB for Qwen's 12–14
+  heads, less than the 297 MiB of their logits buffer (151,936-token vocabulary × 512 × 4
+  bytes), which already sets the buffer size. Net peak RSS still grows more than the
+  reserved buffers at 8k (+318 / +733 / +248 MiB for Qwen 0.5B / Llama 1B / Qwen 1.5B);
+  that extra memory is not identified yet.
+- *Steps 1–2 vs 3a.* Steps 1–2 ran with flash attention off, step 3a with it on: their
+  numbers are comparable at short contexts only. At 512 tokens the two were close (Llama
+  decode 24.9 vs 25.3 tok/s); at 2k, flash attention off is already faster.
+- *Run-to-run variation.* The first round of a run prefills faster than the next ones
+  (Llama 8k TTFT 91.5 s, then 125.0 and 124.8 s), in both settings, which stay ordered the
+  same way within each round. Decode varies less, by 12% at most. Compare TTFT within a run, not across
+  runs: the same F16, flash-attention-on cell gave 101 s in 3a, 125 s in 3b and 112 s in 3c.
+
+#### 3c. Quantized KV cache
+
+**Hypotheses.**
+1. Quantizing the cache shrinks its memory in proportion to its bits: Q8_0 to 34/64 of F16,
+   Q4_0 to 18/64 (block of 32 values + a 2-byte scale).
+2. It speeds decode up at long contexts, where the cache is a large share of the bytes read
+   per token; at 2k the cache is small, so little should change.
+3. Q8_0 should be nearly lossless, Q4_0 a little less — not measured in this run, which is
+   speed and memory only.
+
+**Protocol.** [`configs/03_kv_quant.yaml`](configs/03_kv_quant.yaml) — same three Q4_K_M
+models, flash attention on (llama.cpp requires it to quantize V), F16 vs Q8_0 vs Q4_0 for
+both K and V, prompts of 2,048 and 8,192 tokens, 128 generated tokens; 3 interleaved rounds
+(54 measurements, 1 h 55, canary 2.6–3.4 ms). 8k rather than 16k: 16k prefills alone would
+have taken about 4 hours, and at 8k the cache is already a third of Llama's weights.
+
+```bash
+python scripts/run_experiment.py configs/03_kv_quant.yaml
+python scripts/make_plots.py results/03_kv_quant/<run_id>
+```
+
+![Quantized KV cache: TTFT, decode time per token, cache size](figures/03_kv_quant.png)
+
+| Model (Q4_K_M) | Context | KV cache | TTFT | Decode | ms / token | KV cache size | Net peak RSS |
+|---|---|---|---|---|---|---|---|
+| Qwen2.5-0.5B | 2,048 | F16 | 14.2 s | 31.3 tok/s | 32 | 27 MiB | 520 MiB |
+| | | Q8_0 | 20.1 s | 30.4 tok/s | 33 | 14 MiB | 497 MiB |
+| | | Q4_0 | 20.6 s | 29.9 tok/s | 33 | 8 MiB | 497 MiB |
+| | 8,192 | F16 | 80.5 s | 14.9 tok/s | 67 | 99 MiB | 610 MiB |
+| | | Q8_0 | 167 s | 15.9 tok/s | 63 | 53 MiB | 577 MiB |
+| | | Q4_0 | 170 s | 15.1 tok/s | 66 | 28 MiB | 534 MiB |
+| Llama-3.2-1B | 2,048 | F16 | 20.8 s | 16.7 tok/s | 60 | 72 MiB | 1,342 MiB |
+| | | Q8_0 | 28.9 s | 17.0 tok/s | 59 | 38 MiB | 1,305 MiB |
+| | | Q4_0 | 29.3 s | 18.5 tok/s | 54 | 20 MiB | 1,266 MiB |
+| | 8,192 | F16 | 112 s | 3.7 tok/s | 270 | 264 MiB | 1,540 MiB |
+| | | Q8_0 | 362 s | 4.9 tok/s | 204 | 140 MiB | 1,419 MiB |
+| | | Q4_0 | 278 s | 7.8 tok/s | 128 | 74 MiB | 1,347 MiB |
+| Qwen2.5-1.5B | 2,048 | F16 | 27.0 s | 16.6 tok/s | 60 | 63 MiB | 1,783 MiB |
+| | | Q8_0 | 36.2 s | 16.6 tok/s | 60 | 34 MiB | 1,717 MiB |
+| | | Q4_0 | 36.1 s | 16.5 tok/s | 61 | 18 MiB | 1,717 MiB |
+| | 8,192 | F16 | 147 s | 6.4 tok/s | 156 | 231 MiB | 1,957 MiB |
+| | | Q8_0 | 291 s | 8.9 tok/s | 112 | 123 MiB | 1,846 MiB |
+| | | Q4_0 | 293 s | 8.6 tok/s | 116 | 65 MiB | 1,788 MiB |
+
+Medians over 3 rounds. Run:
+[`results/03_kv_quant/20261101-092609/`](results/03_kv_quant/20261101-092609/).
+
+**Conclusions.**
+- *Hypothesis 1, memory: confirmed.* The reserved cache is exactly 34/64 (Q8_0) and 18/64
+  (Q4_0) of F16, and net peak RSS falls by about as much as the cache (Llama 8k: −121 and
+  −193 MiB of RSS for −124 and −190 MiB of cache).
+- *Hypothesis 2, decode: confirmed at 8k for the 1B and 1.5B models, not for the 0.5B.* At
+  8k, Q4_0 doubles Llama's decode (3.7 → 7.8 tok/s) and Q8_0 speeds it up by a third; Qwen
+  1.5B gains 34–39% with either. Qwen 0.5B, whose cache is the smallest (99 MiB), barely
+  changes (+1 to +7%). At 2k, decode moves by 11% at most, as expected. Step 3a showed that decode at
+  long contexts is bound by the attention computation rather than by bandwidth, so the gain
+  likely comes from a faster kernel path for quantized K/V in llama.cpp rather than from
+  fewer bytes read; not verified. Even so, Llama with an F16 cache and flash attention off
+  (12.2 tok/s in step 3b) still decodes faster than with any quantized cache.
+- *Not predicted: prefill becomes 2–3× slower.* At 8k, TTFT goes from 112 to 362 s (Q8_0)
+  and 278 s (Q4_0) on Llama, and roughly doubles on both Qwen models; at 2k it already rises
+  by 34–45%. Mechanism not identified. Q8_0 prefills slower than Q4_0 on Llama.
+- *In practice.* For a long prompt and a short answer, a quantized cache loses on this CPU:
+  Llama at 8k needs 294 s end to end for 128 tokens with Q4_0, against 146 s with F16. Its
+  faster decode only pays off beyond about 1,200 generated tokens. Its real benefit is
+  memory: it fits a longer context in the same RAM.
+- *Quality not measured.* Whether Q8_0 is lossless and how much Q4_0 degrades the output
+  remains open (perplexity with a quantized cache).
 
 ## Key takeaways
 
