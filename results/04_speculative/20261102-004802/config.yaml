@@ -1,0 +1,54 @@
+# Step 4 — greedy speculative decoding: Qwen2.5-0.5B drafts, Qwen2.5-1.5B verifies.
+#
+# Each round the draft guesses k tokens; the target checks them in one pass and keeps the
+# prefix it agrees with, plus one token of its own. With acceptance rate α per guess, a
+# pass yields (1 - α^(k+1)) / (1 - α) tokens on average, for k draft steps + 1 target pass.
+# The gain depends on the draft-to-target cost ratio c (step 2 decode speeds): 0.21 for an
+# F16 target (9.2 tok/s vs 43 for the Q8_0 draft), 0.49 for a Q4_K_M target (21 tok/s).
+#
+# Hypotheses:
+#   1. With α = 0.7 and k = 4, the F16 target should speed up ~1.4x; the Q4_K_M target
+#      should not gain, or even slow down (~0.9x): its draft is not cheap enough.
+#   2. A target pass over k+1 tokens costs about one decode step for small k (weights read
+#      once), then grows as the CPU becomes compute-bound.
+#   3. Code is more predictable than prose: higher acceptance rate.
+#   4. There is a best k: too small gains little, too large wastes guesses that get rejected.
+#   5. The output is exactly the target's own greedy output, for every k.
+#
+# Same tokenizer for both models (Qwen2.5, 151,936 tokens), required to compare guesses.
+experiment: 04_speculative
+backend_args:
+  n_threads: 4
+  n_batch: 512
+  seed: 0
+
+draft:
+  name: qwen2.5-0.5b
+  quant: Q8_0
+  path: models/qwen2.5-0.5b-instruct-q8_0.gguf
+
+targets:
+  - name: qwen2.5-1.5b
+    quant: F16
+    path: models/qwen2.5-1.5b-instruct-fp16.gguf
+  - name: qwen2.5-1.5b
+    quant: Q4_K_M
+    path: models/qwen2.5-1.5b-instruct-q4_k_m.gguf
+
+draft_tokens: [0, 1, 2, 4, 6, 8]   # k; 0 = the target alone (the reference)
+verify_batch_sizes: [1, 2, 3, 5, 7, 9]
+
+prompts:
+  # code_extract.txt: frozen copy of src/llmbench/runner.py at commit 149bf51.
+  sources:
+    prose: data/prompts/wikitext2_valid_extract.txt
+    code: data/prompts/code_extract.txt
+  length: 256
+
+generation:
+  max_new_tokens: 128
+
+warmup: 2
+warmup_prompt_len: 32
+repetitions: 5            # each round loads both targets once, in a shuffled order
+schedule_seed: 0
