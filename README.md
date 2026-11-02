@@ -67,7 +67,7 @@ Lessons from the first runs are built into the runner:
 1. **Baseline**: TTFT, latency, throughput and memory of 3 small models — [results](#1-baseline)
 2. **Weight quantization**: F16, Q8_0, Q4_K_M (speed, memory, perplexity, MMLU) — [results](#2-weight-quantization)
 3. **KV cache**: effect of context length, flash attention, quantized KV cache, generation with vs without cache — [results](#3-kv-cache)
-4. **Speculative decoding**: speedup and acceptance rate — *upcoming*
+4. **Speculative decoding**: speedup, acceptance rate, cost of verification — [results](#4-speculative-decoding)
 
 ### 1. Baseline
 
@@ -509,6 +509,93 @@ Run: [`results/03_kv_hf/20261101-141821/`](results/03_kv_hf/20261101-141821/).
 - *Why the cache matters.* Without it, every generated token turns decode back into a
   prefill. With it, decode reads the weights once per token plus a cache that grows
   linearly, which is the regime measured in steps 1 to 3c.
+
+### 4. Speculative decoding
+
+Decode reads all the weights for every token. In speculative decoding, a small **draft**
+model guesses k tokens one by one, and the **target** model checks them all in a single
+forward pass: it keeps the longest prefix it agrees with, plus one token of its own. If
+the guesses are often right, the target produces several tokens per pass. With greedy
+decoding, the output is in principle exactly the target's own.
+
+The loop is hand-written ([`src/llmbench/speculative.py`](src/llmbench/speculative.py)) on top
+of llama.cpp contexts: batches are built by hand so only the needed positions get logits,
+and rejected guesses are dropped from the KV cache by rolling it back. Tested on fake
+models: same output as the target alone for any k and any draft quality
+([`tests/test_speculative.py`](tests/test_speculative.py)).
+
+**Hypotheses.** With an acceptance rate α, a round costs k draft steps plus one target
+pass, and yields 1 + (accepted guesses) tokens. The gain depends on the draft-to-target
+cost ratio c, from the step 2 decode speeds: 0.21 for an F16 target (9.2 tok/s, against
+43 tok/s for the Q8_0 draft), 0.49 for a Q4_K_M target (21 tok/s).
+1. With α = 0.7 and k = 4, the F16 target should speed up ~1.4×; the Q4_K_M target should
+   not gain, or slow down (~0.9×).
+2. A target pass over k + 1 tokens costs about one decode step for small k (the weights are
+   read once), then more as the CPU becomes compute-bound.
+3. Code is more predictable than prose: higher acceptance rate.
+4. There is a best k: too small gains little, too large wastes rejected guesses.
+5. The output is exactly the target's greedy output, for every k.
+
+**Protocol.** [`configs/04_speculative.yaml`](configs/04_speculative.yaml) — draft
+Qwen2.5-0.5B Q8_0, targets Qwen2.5-1.5B F16 and Q4_K_M (same tokenizer, required to compare
+guesses); k ∈ {1, 2, 4, 6, 8} and the target alone (k = 0); prose (WikiText-2) and code (a
+frozen copy of `runner.py`) prompts of 256 tokens; 128 generated tokens; flash attention
+off. 5 interleaved rounds: each loads both targets in a shuffled order, then runs every
+(prompt, k) pair in a shuffled order. Speedup = decode throughput over that of the target
+alone, in the same round and on the same prompt. 120 generations, 48 min, canary
+2.6–3.6 ms. The draft's prefill counts in the TTFT, not in decode.
+
+```bash
+python scripts/run_speculative.py configs/04_speculative.yaml
+python scripts/make_plots.py results/04_speculative/<run_id>
+```
+
+![Speculative decoding: speedup, acceptance rate, cost of one target pass](figures/04_speculative.png)
+
+| Target (Qwen2.5-1.5B) | Prompt | k = 1 | k = 2 | k = 4 | k = 6 | k = 8 |
+|---|---|---|---|---|---|---|
+| F16 (alone: 9.4 tok/s) | code | 1.24× (88%) | 1.45× (85%) | **1.54× (68%)** | 1.53× (66%) | 1.37× (55%) |
+| | prose | 1.14× (81%) | 1.16× (61%) | **1.22× (49%)** | 1.02× (42%) | 0.96× (36%) |
+| Q4_K_M (alone: 21.0 tok/s) | code | 0.86× (92%) | 0.74× (84%) | 0.73× (72%) | 0.62× (62%) | 0.50× (52%) |
+| | prose | 0.85× (87%) | 0.66× (68%) | 0.66× (64%) | 0.58× (59%) | 0.45× (41%) |
+
+Decode speedup against the target alone (median over 5 rounds), and in brackets the share
+of draft tokens accepted.
+
+| Tokens in one target pass | 1 | 2 | 3 | 5 | 7 | 9 |
+|---|---|---|---|---|---|---|
+| F16 | 109 ms | 129 ms (1.18×) | 128 ms (1.17×) | 149 ms (1.36×) | 180 ms (1.65×) | 237 ms (2.17×) |
+| Q4_K_M | 51 ms | 72 ms (1.40×) | 101 ms (1.97×) | 139 ms (2.72×) | 185 ms (3.60×) | 244 ms (4.75×) |
+
+Run: [`results/04_speculative/20261102-004802/`](results/04_speculative/20261102-004802/).
+
+**Conclusions.**
+- *Hypothesis 1: confirmed.* The F16 target gains up to 1.54× (9.4 → 14.4 tok/s on code,
+  k = 4); the Q4_K_M target is slower at every k, down to 0.45×. The cost model holds once
+  fed with measured times: at k = 4 a round costs 4 draft steps of ~25 ms plus one target
+  pass (160 ms in F16, 148 ms in Q4_K_M) for 3.7–3.9 tokens, i.e. 69 ms per token against
+  107 ms for the F16 target alone (1.55×), and 64 ms against 48 ms for Q4_K_M (0.74×).
+- *Hypothesis 2: confirmed for F16, refuted for Q4_K_M.* Five tokens cost 1.36× one token in
+  F16 but 2.72× in Q4_K_M. Both take about the same absolute time (~140–150 ms): once
+  several tokens share a pass, the work is compute, not reading weights. A Q4_K_M decode
+  step is fast because it reads few bytes, so there is little left to share. Same mechanism
+  as step 2: dequantizing the weights costs compute.
+- *Hypothesis 3: confirmed.* At k = 4, 68–72% of the guesses are accepted on code, 49–64%
+  on prose. The F16 target gains 1.54× on code but only 1.22× on prose.
+- *Hypothesis 4: confirmed.* The best k is 4 for the F16 target (k = 6 is as good on code).
+  Beyond, the acceptance rate keeps falling while the target pass gets more expensive: at
+  k = 8, prose is slower than the target alone.
+- *Hypothesis 5: confirmed for F16, refuted for Q4_K_M.* With the F16 target, the output is
+  identical to the target alone in all 50 generations. With the Q4_K_M target it differs in
+  all 50, always at the same place for a given prompt (token 79 on code, tokens 4–47 on
+  prose depending on k). The algorithm is exact in exact arithmetic, but llama.cpp does not
+  round a batch of tokens the same way as one token at a time: the logits differ by up to
+  0.6 in Q4_K_M (0.009 in F16), enough to flip a near-tie. The output is still a plausible
+  greedy output of the same model, not the bit-identical one.
+- *In practice.* Speculative decoding pays off when the draft is much cheaper than the
+  target *and* verifying several tokens costs little more than one. On a GPU, decode leaves
+  most of the compute idle, so both usually hold. On this CPU, they only hold for an
+  unquantized target: with a 4-bit target, the plain target is faster.
 
 ## Key takeaways
 

@@ -334,6 +334,55 @@ def plot_kv_hf(summary: pd.DataFrame, out: Path) -> None:
     print(f"-> {out}")
 
 
+TARGET_COLORS = {"F16": SERIES[0], "Q4_K_M": SERIES[1]}
+PROMPT_STYLES = {"code": "-", "prose": "--"}
+
+
+def plot_speculative(summary: pd.DataFrame, verify: pd.DataFrame, out: Path) -> None:
+    """Step 4: speedup and acceptance rate against k, and the cost of one target pass."""
+    fig, axes = plt.subplots(1, 3, figsize=(12, 3.8), layout="constrained")
+    for quant, color in TARGET_COLORS.items():
+        for kind, ls in PROMPT_STYLES.items():
+            g = summary[(summary["target_quant"] == quant) & (summary["prompt_kind"] == kind)]
+            g = g.sort_values("k")
+            med, err = _err(g, "speedup")
+            axes[0].errorbar(g["k"], med, yerr=err, color=color, ls=ls, lw=2, marker="o", ms=6,
+                             capsize=3)
+            spec = g[g["k"] > 0]
+            axes[1].plot(spec["k"], 100 * spec["acceptance_rate_median"], color=color, ls=ls,
+                         lw=2, marker="o", ms=6)
+        v = verify[verify["target_quant"] == quant].sort_values("batch")
+        axes[2].plot(v["batch"], 1e3 * v["time_s"], color=color, lw=2, marker="o", ms=6)
+        # The two lines end a few ms apart: labels above and below to keep them apart.
+        axes[2].annotate(f"×{v['vs_one_token'].iloc[-1]:.1f} one token",
+                         (v["batch"].iloc[-1], 1e3 * v["time_s"].iloc[-1]),
+                         xytext=(6, 8 if quant == "Q4_K_M" else -8), textcoords="offset points",
+                         va="center", color=INK_2, fontsize=8)
+    axes[0].axhline(1, color=INK_2, lw=1)
+    axes[0].set_ylabel("decode speedup vs target alone")
+    axes[0].set_title("Speedup (median, IQR)")
+    axes[0].set_xlabel("draft tokens per round (k; 0 = target alone)")
+    axes[1].set_ylim(0, 100)
+    axes[1].set_ylabel("% of draft tokens accepted")
+    axes[1].set_title("Acceptance rate (median)")
+    axes[1].set_xlabel("draft tokens per round (k)")
+    axes[2].set_ylim(bottom=0)
+    axes[2].set_ylabel("ms")
+    axes[2].set_title("One target pass (median)")
+    axes[2].set_xlabel("tokens in the pass (k + 1)")
+    axes[2].margins(x=0.25)
+    for ax in axes[:2]:
+        ax.set_xticks(sorted(summary["k"].unique()))
+    handles = [plt.Line2D([], [], color=c, lw=2) for c in TARGET_COLORS.values()]
+    handles += [plt.Line2D([], [], color=INK_2, lw=2, ls=ls) for ls in PROMPT_STYLES.values()]
+    labels = [f"target Qwen2.5-1.5B {q}" for q in TARGET_COLORS] + [
+        f"{kind} prompt" for kind in PROMPT_STYLES]
+    fig.legend(handles, labels, loc="outside lower center", ncol=4, frameon=False)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150)
+    print(f"-> {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("run_dir", type=Path)
@@ -341,11 +390,14 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("figures"))
     args = parser.parse_args()
     summary = pd.read_csv(args.run_dir / "summary.csv")
+    experiment = args.run_dir.parent.name
+    out = args.out / f"{experiment}.png"
+    if experiment == "04_speculative":
+        plot_speculative(summary, pd.read_csv(args.run_dir / "verify_cost.csv"), out)
+        return
     # Config order (by size), not the alphabetical order of the summary's groupby.
     names = [m["name"] for m in load_config(args.run_dir / "config.yaml")["models"]]
     models = list(dict.fromkeys(names))
-    experiment = args.run_dir.parent.name
-    out = args.out / f"{experiment}.png"
     if args.quality:
         plot_quantization(summary, pd.read_csv(args.quality / "quality.csv"), models, out)
     elif experiment == "03_kv_context":
