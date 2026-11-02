@@ -20,7 +20,7 @@ import psutil
 # (and therefore which quantized formats llama.cpp can accelerate).
 SIMD_FLAGS = ("avx", "avx2", "fma", "f16c", "avx512f", "avx512_vnni", "avx512_bf16", "avx_vnni", "amx_tile")
 
-TRACKED_PACKAGES = ("torch", "transformers", "llama_cpp_python", "optimum-quanto", "numpy")
+TRACKED_PACKAGES = ("torch", "transformers", "llama_cpp_python", "numpy")
 
 
 def _cpu_info() -> dict:

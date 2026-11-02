@@ -3,13 +3,13 @@
 A reproducible benchmark of small open-source LLM inference: TTFT, latency, throughput,
 memory, then the effect of quantization, the KV cache and speculative decoding.
 Every experiment follows **hypothesis → protocol → measurements → conclusion**, and
-negative results are kept.
+negative results are kept. Main findings: [key takeaways](#key-takeaways).
 
 ## Reference hardware
 
 | Component | Value | Consequence |
 |---|---|---|
-| CPU | AMD Ryzen 5 7520U (Zen 2, 4 cores / 8 threads, AVX2 + FMA + F16C, no AVX-512) | CPU inference: memory is the bottleneck, not compute |
+| CPU | AMD Ryzen 5 7520U (Zen 2, 4 cores / 8 threads, AVX2 + FMA + F16C, no AVX-512) | Short-context decode is bound by memory bandwidth; compute takes over for long contexts, quantized weights and batched tokens |
 | RAM (WSL2) | 7.4 GiB visible (host: 15.3 GB) | Models ≤ 1.5B; a 1.5B model in FP32 (~6 GB) does not fit |
 | GPU | Radeon 610M iGPU, no CUDA | Not used: every experiment runs on the CPU |
 | OS | Ubuntu 24.04 on WSL2 | The `env.json` snapshot is saved with every run |
@@ -25,14 +25,16 @@ src/llmbench/
   memory.py         peak memory (process RSS)
   quality.py        perplexity, agreement with a reference model, MMLU accuracy, McNemar test
   runner.py         interleaved experiment loop, JSONL output, run summaries
-scripts/            run_experiment.py, run_quality.py, make_plots.py, download_models.py,
-                    prepare_eval_data.py, check_env.py
-data/prompts/       frozen prompt text for speed runs
+  speculative.py    greedy speculative decoding: draft/verify loop, KV cache rollback
+scripts/            run_experiment.py, run_quality.py, run_speculative.py, make_plots.py,
+                    download_models.py, prepare_eval_data.py, check_env.py
+data/prompts/       frozen prompt text for speed runs (prose and code)
 data/eval/          frozen evaluation data (WikiText-2 extract, 200 MMLU questions)
 results/<exp>/<run>/ raw.jsonl (not versioned) + env.json + config.yaml + summary.csv
 figures/            plots generated from results/
 notebooks/          reserved for GPU measurements on Kaggle (none yet)
-tests/              unit tests (metrics, quality metrics, scheduling, memory sampling)
+tests/              unit tests (metrics, quality metrics, scheduling, memory, HF backend,
+                    speculative decoding)
 ```
 
 ## Setup
@@ -56,8 +58,8 @@ Lessons from the first runs are built into the runner:
 - **Machine-state canary.** Under WSL2 the load average and steal time do not see the
   Windows host. Before every measurement the runner times a fixed memory-bound probe
   (summing 32 MiB); a slow canary flags a disturbed measurement.
-- **Medians and interquartile ranges** in figures: the first round is sometimes slower
-  (cold start), and the median is robust to it.
+- **Medians and interquartile ranges** in figures: the first round sometimes differs from
+  the others (slower in step 1, faster prefill in step 3), and the median is robust to it.
 - **Fixed work.** Greedy decoding, fixed output length (EOS ignored), prompts cut to an exact
   number of tokens with each model's own tokenizer, prefix cache reset before every
   generation.
@@ -109,8 +111,8 @@ Run: [`results/01_baseline/20261022-002559/`](results/01_baseline/20261022-00255
 - *Prefill and decode weigh about the same.* At 512 tokens, waiting for the first token
   takes 0.9–1.1× the time needed to generate the next 128.
 - *Memory: weight size alone does not predict the footprint.* The overhead beyond the GGUF
-  file ranges from ~80 MiB (0.5B) to ~560–720 MiB (1B, 1.5B). Breaking it down belongs to
-  step 3 (KV cache).
+  file ranges from ~80 MiB (0.5B) to ~560–720 MiB (1B, 1.5B). Step 3a breaks it down: not
+  the KV cache, but likely the compute buffer and the Q4_K repack.
 
 **Correction.** A first step 1 run (2026-10-20, kept in
 [`results/01_baseline/20261020-233651/`](results/01_baseline/20261020-233651/)) measured each
@@ -227,8 +229,9 @@ Runs: [speed](results/02_quantization/20261022-003157/),
   cost; Q8_0 is the choice when fidelity to F16 matters.
 - *Memory.* Net peak RSS roughly halves from F16 to Q4_K_M, but Q8_0 → Q4_K_M saves little
   for the 1B and 1.5B models (−3% and −8%) despite files 39–41% smaller. RSS reflects which
-  mapped pages are actually touched and the buffers llama.cpp allocates, not just the file;
-  step 3 will break this down.
+  mapped pages are actually touched and the buffers llama.cpp allocates, not just the file.
+  Step 3a points to the Q4_K repack, which keeps a second copy of part of the weights
+  (+446 MiB for the 1B, +597 MiB for the 1.5B); not yet confirmed by disabling it.
 
 ### 3. KV cache
 
@@ -288,8 +291,8 @@ Run: [`results/03_kv_context/20261025-064956/`](results/03_kv_context/20261025-0
   16k, each extra context token costs 7.5 µs (Qwen 0.5B), 27.6 µs (Llama 1B) and 17.4 µs
   (Qwen 1.5B) per generated token, 13–19× more than reading its 12–32 KiB of cache at the
   ~22 GB/s of step 1 would take. At long contexts, decode is no longer bound by memory
-  bandwidth but by the attention computation. Prime suspect, not yet verified: llama.cpp's
-  CPU flash attention kernel. Step 3b measures it on vs off (confirmed there).
+  bandwidth but by the attention computation. Prime suspect: llama.cpp's CPU flash
+  attention kernel, confirmed by measuring it on vs off in step 3b.
 - *Hypothesis 2, TTFT: confirmed.* Prefill throughput roughly halves from 512 to 16k tokens
   for all three models. Llama-3.2-1B gets 32× more tokens but takes 71× longer (4.0 s →
   284 s). In practice, a 16k-token prompt means waiting about 5 minutes for the first token
@@ -627,3 +630,18 @@ Run: [`results/04_speculative/20261102-004802/`](results/04_speculative/20261102
 7. **Measurement protocol matters as much as the code.** Interleaved rounds and a canary
    withdrew two wrong conclusions from the first run; battery power cost ~1.8× throughput;
    TTFT drifts between rounds, so it is only compared within a run.
+
+## Open questions
+
+Leads found along the way and not tested yet:
+
+- **The Q4_K repack.** llama.cpp keeps a second, AVX2-friendly copy of part of the Q4_K
+  weights (+446 MiB for Llama-3.2-1B, +597 MiB for Qwen2.5-1.5B). It may explain both the
+  small RAM saving from Q8_0 to Q4_K_M and Q4_K_M's fast prefill (steps 2, 3a). Test: rerun
+  with repacking disabled.
+- **The Qwen2.5-0.5B "Q4_K_M" file is 62% Q5_0.** Likely cause of its slow prefill and of a
+  decode no faster than Q8_0 (step 2).
+- **Bimodal prefill at 32 tokens** (~50 vs ~150 tok/s on the 0.5B, step 1).
+- **Memory without flash attention** grows more than the buffers llama.cpp reserves (step 3b).
+- **Quantized KV cache:** why prefill slows down 2–3×, and what it costs in quality
+  (perplexity was not measured, step 3c).
