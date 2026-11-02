@@ -11,7 +11,7 @@ negative results are kept.
 |---|---|---|
 | CPU | AMD Ryzen 5 7520U (Zen 2, 4 cores / 8 threads, AVX2 + FMA + F16C, no AVX-512) | CPU inference: memory is the bottleneck, not compute |
 | RAM (WSL2) | 7.4 GiB visible (host: 15.3 GB) | Models ≤ 1.5B; a 1.5B model in FP32 (~6 GB) does not fit |
-| GPU | Radeon 610M iGPU, no CUDA | GPU parts (step 4 at larger scale) run in a Kaggle notebook |
+| GPU | Radeon 610M iGPU, no CUDA | Not used: every experiment runs on the CPU |
 | OS | Ubuntu 24.04 on WSL2 | The `env.json` snapshot is saved with every run |
 
 ## Repository layout
@@ -31,7 +31,7 @@ data/prompts/       frozen prompt text for speed runs
 data/eval/          frozen evaluation data (WikiText-2 extract, 200 MMLU questions)
 results/<exp>/<run>/ raw.jsonl (not versioned) + env.json + config.yaml + summary.csv
 figures/            plots generated from results/
-notebooks/          Kaggle notebooks for GPU measurements
+notebooks/          reserved for GPU measurements on Kaggle (none yet)
 tests/              unit tests (metrics, quality metrics, scheduling, memory sampling)
 ```
 
@@ -599,4 +599,31 @@ Run: [`results/04_speculative/20261102-004802/`](results/04_speculative/20261102
 
 ## Key takeaways
 
-*To be written at the end.*
+1. **On CPU, decode speed is set by the bytes read per token.** Three models of different
+   sizes all decode at the same effective bandwidth, 21–23 GB/s (step 1). A model's file
+   size predicts its decode speed better than its parameter count.
+2. **Quantization reads fewer bytes, but unpacking them costs compute.** Q4_K_M decodes
+   1.7–2.3× faster than F16 instead of the 2.6–3.2× its size promises, for +4–5% perplexity;
+   Q8_0 is nearly lossless (step 2). Unchanged MMLU accuracy hid 6–20% of changed answers:
+   agreement with the reference says more than accuracy alone.
+3. **Long contexts move the bottleneck from memory to compute.** At 16k tokens, Llama-3.2-1B
+   decodes 12× slower than at 512, where reading the larger cache predicts 1.7×, and waits
+   ~5 minutes for its first token (step 3a). Most of that decode cost is llama.cpp's CPU
+   flash attention kernel: turned off, 8k decode is 3.2× faster (step 3b).
+4. **The KV cache is exact and indispensable; its price is memory.** Without it, every token
+   is a full prefill: 45× slower at 1,024 tokens, same output (step 3d). Its size follows a
+   simple formula, exact to the MiB, that grouped-query attention keeps small. Quantizing it
+   divides that memory by ~2 (Q8_0) or ~3.6 (Q4_0) and speeds long decode up, but makes
+   prefill 2–3× slower: a memory tool, not a speed tool for long prompts with short answers
+   (step 3c).
+5. **Speculative decoding needs both a cheap draft and a cheap verification.** A 0.5B draft
+   speeds a F16 1.5B target up to 1.54×, but slows the same target in Q4_K_M at every k
+   (step 4). The common thread with points 2 and 3: as soon as the work stops being
+   bandwidth-bound (unpacking weights, verifying a batch of tokens, attending over a long
+   context), the gains expected from "fewer bytes" shrink or reverse on a 4-core CPU.
+6. **"Exact" depends on the arithmetic.** Speculative decoding is exact in principle, yet
+   with a Q4_K_M target its output never matched the target alone: llama.cpp does not round
+   a batch of tokens like a single token (logits up to 0.6 apart), enough to flip near-ties.
+7. **Measurement protocol matters as much as the code.** Interleaved rounds and a canary
+   withdrew two wrong conclusions from the first run; battery power cost ~1.8× throughput;
+   TTFT drifts between rounds, so it is only compared within a run.
