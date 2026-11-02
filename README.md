@@ -587,8 +587,8 @@ Run: [`results/04_speculative/20261102-004802/`](results/04_speculative/20261102
   k = 8, prose is slower than the target alone.
 - *Hypothesis 5: confirmed for F16, refuted for Q4_K_M.* With the F16 target, the output is
   identical to the target alone in all 50 generations. With the Q4_K_M target it differs in
-  all 50, always at the same place for a given prompt (token 79 on code, tokens 4–47 on
-  prose depending on k). The algorithm is exact in exact arithmetic, but llama.cpp does not
+  all 50, at the same place in every round for a given prompt and k (token 79 on code,
+  token 4, 30 or 47 on prose depending on k). The algorithm is exact in exact arithmetic, but llama.cpp does not
   round a batch of tokens the same way as one token at a time: the logits differ by up to
   0.6 in Q4_K_M (0.009 in F16), enough to flip a near-tie. The output is still a plausible
   greedy output of the same model, not the bit-identical one.
